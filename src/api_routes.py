@@ -1,11 +1,15 @@
 import os
+import logging
 from fastapi import APIRouter, HTTPException, Query, Depends
 from typing import List, Dict, Any, Optional
 from enum import Enum
 
-from .wikipedia_client import WikipediaClient
+from .wikipedia_client import WikipediaClient, ArticleNotFoundError
 from .caching_service import CachingService, cached
 from .parser import WikipediaParser
+
+# Setup logging
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 CACHE_TYPE = os.getenv("CACHE_TYPE", "ttl")
@@ -34,6 +38,63 @@ def get_cache_service() -> CachingService:
         ttl=CACHE_TTL,
         cache_dir=CACHE_DIR
     )
+
+# Helper functions
+def handle_disambiguation(article_data: Dict[str, Any], title: str) -> Dict[str, Any]:
+    """Handle disambiguation pages consistently across endpoints."""
+    if "error" in article_data and article_data["error"] == "disambiguation":
+        return {
+            "type": "disambiguation",
+            "title": title,
+            "options": article_data.get("options", []),
+            "message": article_data.get("message", "")
+        }
+    return None
+
+def get_parsed_article(title: str, auto_suggest: bool, wiki_client: WikipediaClient, cache_service: CachingService) -> Dict[str, Any]:
+    """
+    Central function to get and parse a Wikipedia article.
+    
+    Args:
+        title: Article title
+        auto_suggest: Whether to auto-suggest similar titles
+        wiki_client: WikipediaClient instance
+        cache_service: CachingService instance
+        
+    Returns:
+        Parsed article data
+    """
+    # Create cache key for the parsed article
+    cache_key = f"parsed_article:{title}"
+    
+    # Try to get from cache first
+    cached_article = cache_service.get(cache_key)
+    if cached_article:
+        return cached_article
+    
+    try:
+        # Get raw article data
+        cached_get_article = cached(cache_service, key_prefix="raw_article")(wiki_client.get_article)
+        raw_article_data = cached_get_article(title, auto_suggest=auto_suggest)
+        
+        # Check for disambiguation
+        disambiguation = handle_disambiguation(raw_article_data, title)
+        if disambiguation:
+            return disambiguation
+        
+        # Parse the article
+        parsed_article = WikipediaParser.parse_article(raw_article_data)
+        
+        # Cache the parsed result
+        cache_service.set(cache_key, parsed_article)
+        
+        return parsed_article
+    except ArticleNotFoundError as e:
+        logger.warning(f"Article not found: {title}")
+        raise HTTPException(status_code=404, detail=f"Article not found: {title}")
+    except Exception as e:
+        logger.error(f"Error retrieving article: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving article: {str(e)}")
 
 # Routes
 @router.get("/search", response_model=Dict[str, Any])
@@ -66,6 +127,7 @@ async def search_wikipedia(
             "count": len(search_results)
         }
     except Exception as e:
+        logger.error(f"Search error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/article", response_model=Dict[str, Any])
@@ -85,19 +147,7 @@ async def get_article(
     Returns:
         Formatted article data
     """
-    try:
-        # Create cache decorator
-        cached_get_article = cached(cache_service, key_prefix="article")(wiki_client.get_article)
-        
-        # Get article data
-        article_data = cached_get_article(title, auto_suggest=auto_suggest)
-        
-        # Format for LLM consumption
-        formatted_data = WikipediaParser.format_for_llm(article_data)
-        
-        return formatted_data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return get_parsed_article(title, auto_suggest, wiki_client, cache_service)
 
 @router.get("/summary", response_model=Dict[str, Any])
 async def get_summary(
@@ -116,48 +166,24 @@ async def get_summary(
     Returns:
         Article summary
     """
-    try:
-        # Create cache decorator for get_article
-        cached_get_article = cached(cache_service, key_prefix="article")(wiki_client.get_article)
-        
-        # Create cache key for the summary
-        cache_key = f"summary:{title}:{level}"
-        
-        # Try to get from cache first
-        cached_summary = cache_service.get(cache_key)
-        if cached_summary:
-            return cached_summary
-        
-        # Get article data
-        article_data = cached_get_article(title)
-        
-        # Handle disambiguation pages
-        if "error" in article_data and article_data["error"] == "disambiguation":
-            return {
-                "type": "disambiguation",
-                "title": title,
-                "options": article_data.get("options", []),
-                "message": article_data.get("message", "")
-            }
-        
-        # Generate summary
-        summary = WikipediaParser.generate_summary(article_data, level=level)
-        
-        # Create response
-        response = {
-            "type": "summary",
-            "title": article_data.get("title", title),
-            "level": level,
-            "summary": summary,
-            "url": article_data.get("url", "")
-        }
-        
-        # Cache the result
-        cache_service.set(cache_key, response)
-        
-        return response
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # Get parsed article data
+    parsed_article = get_parsed_article(title, True, wiki_client, cache_service)
+    
+    # For disambiguation pages, just return as is
+    if parsed_article.get("type") == "disambiguation":
+        return parsed_article
+    
+    # Generate summary
+    summary = WikipediaParser.generate_summary(parsed_article, level=level)
+    
+    # Create response
+    return {
+        "type": "summary",
+        "title": parsed_article.get("title", title),
+        "level": level,
+        "summary": summary,
+        "url": parsed_article.get("url", "")
+    }
 
 @router.get("/citations", response_model=Dict[str, Any])
 async def get_citations(
@@ -174,49 +200,24 @@ async def get_citations(
     Returns:
         List of citations
     """
-    try:
-        # Create cache decorator
-        cached_get_article = cached(cache_service, key_prefix="article")(wiki_client.get_article)
-        
-        # Create cache key for citations
-        cache_key = f"citations:{title}"
-        
-        # Try to get from cache first
-        cached_citations = cache_service.get(cache_key)
-        if cached_citations:
-            return cached_citations
-        
-        # Get article data
-        article_data = cached_get_article(title)
-        
-        # Handle disambiguation pages
-        if "error" in article_data and article_data["error"] == "disambiguation":
-            return {
-                "type": "disambiguation",
-                "title": title,
-                "options": article_data.get("options", []),
-                "message": article_data.get("message", "")
-            }
-        
-        # Extract citations
-        html_content = article_data.get("html", "")
-        citations = WikipediaParser.extract_citations(html_content)
-        
-        # Create response
-        response = {
-            "type": "citations",
-            "title": article_data.get("title", title),
-            "url": article_data.get("url", ""),
-            "count": len(citations),
-            "citations": citations
-        }
-        
-        # Cache the result
-        cache_service.set(cache_key, response)
-        
-        return response
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # Get parsed article data
+    parsed_article = get_parsed_article(title, True, wiki_client, cache_service)
+    
+    # For disambiguation pages, just return as is
+    if parsed_article.get("type") == "disambiguation":
+        return parsed_article
+    
+    # Extract citations from parsed data
+    citations = parsed_article.get("citations", [])
+    
+    # Create response
+    return {
+        "type": "citations",
+        "title": parsed_article.get("title", title),
+        "url": parsed_article.get("url", ""),
+        "count": len(citations),
+        "citations": citations
+    }
 
 @router.get("/structured", response_model=Dict[str, Any])
 async def get_structured(
@@ -233,48 +234,57 @@ async def get_structured(
     Returns:
         Structured data
     """
-    try:
-        # Create cache decorator
-        cached_get_article = cached(cache_service, key_prefix="article")(wiki_client.get_article)
+    # Get parsed article data
+    parsed_article = get_parsed_article(title, True, wiki_client, cache_service)
+    
+    # For disambiguation pages, just return as is
+    if parsed_article.get("type") == "disambiguation":
+        return parsed_article
+    
+    # Extract structured data from parsed data
+    tables = parsed_article.get("tables", [])
+    infobox = parsed_article.get("infobox", {})
+    
+    # Create response
+    return {
+        "type": "structured",
+        "title": parsed_article.get("title", title),
+        "url": parsed_article.get("url", ""),
+        "tables": tables,
+        "infobox": infobox,
+        "tables_count": len(tables)
+    }
+
+@router.get("/sections", response_model=Dict[str, Any])
+async def get_sections(
+    title: str = Query(..., description="Article title"),
+    wiki_client: WikipediaClient = Depends(get_wikipedia_client),
+    cache_service: CachingService = Depends(get_cache_service)
+):
+    """
+    Get sections from a Wikipedia article.
+    
+    Args:
+        title: Article title
         
-        # Create cache key for structured data
-        cache_key = f"structured:{title}"
-        
-        # Try to get from cache first
-        cached_structured = cache_service.get(cache_key)
-        if cached_structured:
-            return cached_structured
-        
-        # Get article data
-        article_data = cached_get_article(title)
-        
-        # Handle disambiguation pages
-        if "error" in article_data and article_data["error"] == "disambiguation":
-            return {
-                "type": "disambiguation",
-                "title": title,
-                "options": article_data.get("options", []),
-                "message": article_data.get("message", "")
-            }
-        
-        # Extract structured data
-        html_content = article_data.get("html", "")
-        tables = WikipediaParser.extract_tables(html_content)
-        infobox = WikipediaParser.extract_infobox(html_content)
-        
-        # Create response
-        response = {
-            "type": "structured",
-            "title": article_data.get("title", title),
-            "url": article_data.get("url", ""),
-            "tables": tables,
-            "tables_count": len(tables),
-            "infobox": infobox
-        }
-        
-        # Cache the result
-        cache_service.set(cache_key, response)
-        
-        return response
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) 
+    Returns:
+        List of sections with content
+    """
+    # Get parsed article data
+    parsed_article = get_parsed_article(title, True, wiki_client, cache_service)
+    
+    # For disambiguation pages, just return as is
+    if parsed_article.get("type") == "disambiguation":
+        return parsed_article
+    
+    # Extract sections from parsed data
+    sections = parsed_article.get("sections", [])
+    
+    # Create response
+    return {
+        "type": "sections",
+        "title": parsed_article.get("title", title),
+        "url": parsed_article.get("url", ""),
+        "count": len(sections),
+        "sections": sections
+    } 

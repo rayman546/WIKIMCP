@@ -1,7 +1,15 @@
 import time
 import wikipedia
+import logging
 from typing import Dict, List, Optional, Union, Any
 from bs4 import BeautifulSoup
+
+# Setup logging
+logger = logging.getLogger(__name__)
+
+class ArticleNotFoundError(Exception):
+    """Custom exception for article not found errors."""
+    pass
 
 class WikipediaClient:
     """Client for interacting with the Wikipedia API."""
@@ -41,6 +49,7 @@ class WikipediaClient:
         try:
             return wikipedia.search(query, results=results)
         except Exception as e:
+            logger.error(f"Wikipedia search error: {str(e)}")
             raise Exception(f"Wikipedia search error: {str(e)}")
     
     def get_article(self, title: str, auto_suggest: bool = True) -> Dict[str, Any]:
@@ -52,33 +61,34 @@ class WikipediaClient:
             auto_suggest: Whether to auto-suggest similar titles
             
         Returns:
-            Dictionary containing article data
+            Dictionary containing essential article data (title, url, html, summary)
         """
         self._respect_rate_limit()
         try:
             page = wikipedia.page(title, auto_suggest=auto_suggest)
             return {
                 "title": page.title,
-                "content": page.content,
-                "summary": page.summary,
                 "url": page.url,
                 "html": page.html(),
-                "images": page.images,
-                "links": page.links,
-                "categories": page.categories,
-                "references": page.references,
-                "sections": self._extract_sections(page)
+                "summary": page.summary,
+                "content": page.content,  # Keep raw content for full-text processing if needed
+                "images": page.images,    # Keep basic metadata for convenience
+                "links": page.links,      # Keep basic metadata for convenience
+                "categories": page.categories  # Keep basic metadata for convenience
             }
         except wikipedia.exceptions.DisambiguationError as e:
             # Handle disambiguation pages
+            logger.info(f"Disambiguation page found for '{title}': {str(e)}")
             return {
                 "error": "disambiguation",
                 "message": str(e),
                 "options": e.options
             }
         except wikipedia.exceptions.PageError as e:
-            raise Exception(f"Page not found: {str(e)}")
+            logger.error(f"Page not found: {title} - {str(e)}")
+            raise ArticleNotFoundError(f"Page not found: {title}")
         except Exception as e:
+            logger.error(f"Error retrieving article '{title}': {str(e)}")
             raise Exception(f"Error retrieving article: {str(e)}")
     
     def get_summary(self, title: str, sentences: int = 5) -> str:
@@ -102,8 +112,10 @@ class WikipediaClient:
                 options_str += f", and {len(e.options) - 10} more"
             return f"Disambiguation: '{title}' may refer to multiple articles: {options_str}"
         except wikipedia.exceptions.PageError as e:
-            raise Exception(f"Page not found: {str(e)}")
+            logger.error(f"Page not found for summary: {title} - {str(e)}")
+            raise ArticleNotFoundError(f"Page not found: {title}")
         except Exception as e:
+            logger.error(f"Error retrieving summary for '{title}': {str(e)}")
             raise Exception(f"Error retrieving summary: {str(e)}")
     
     def _extract_sections(self, page) -> List[Dict[str, Any]]:
