@@ -1,9 +1,7 @@
 import time
-import wikipedia
-import logging
 import sys
+import logging
 from typing import Dict, List, Optional, Union, Any
-from bs4 import BeautifulSoup
 
 # Debug log function for console output
 def debug_log(message):
@@ -30,6 +28,22 @@ class WikipediaClient:
         self.rate_limit_delay = rate_limit_delay
         self.last_request_time = 0
         
+        # Try to import wikipedia here to handle import errors gracefully
+        try:
+            import wikipedia
+            self.wikipedia = wikipedia
+            try:
+                from bs4 import BeautifulSoup
+                self.BeautifulSoup = BeautifulSoup
+            except ImportError:
+                debug_log("Error: No module named 'bs4' (BeautifulSoup)")
+                debug_log("Make sure you have installed all dependencies: pip install -r requirements.txt")
+                raise ImportError("Missing dependency: bs4 (BeautifulSoup)")
+        except ImportError:
+            debug_log("Error: No module named 'wikipedia'")
+            debug_log("Make sure you have installed all dependencies: pip install -r requirements.txt")
+            raise ImportError("Missing dependency: wikipedia")
+        
     def _respect_rate_limit(self):
         """Ensure rate limiting by adding delay if needed."""
         current_time = time.time()
@@ -53,7 +67,7 @@ class WikipediaClient:
         """
         self._respect_rate_limit()
         try:
-            return wikipedia.search(query, results=results)
+            return self.wikipedia.search(query, results=results)
         except Exception as e:
             logger.error(f"Wikipedia search error: {str(e)}")
             debug_log(f"Wikipedia search error: {str(e)}")
@@ -72,7 +86,7 @@ class WikipediaClient:
         """
         self._respect_rate_limit()
         try:
-            page = wikipedia.page(title, auto_suggest=auto_suggest)
+            page = self.wikipedia.page(title, auto_suggest=auto_suggest)
             return {
                 "title": page.title,
                 "url": page.url,
@@ -83,7 +97,7 @@ class WikipediaClient:
                 "links": page.links,      # Keep basic metadata for convenience
                 "categories": page.categories  # Keep basic metadata for convenience
             }
-        except wikipedia.exceptions.DisambiguationError as e:
+        except self.wikipedia.exceptions.DisambiguationError as e:
             # Handle disambiguation pages
             logger.info(f"Disambiguation page found for '{title}': {str(e)}")
             debug_log(f"Disambiguation page found for '{title}': {str(e)}")
@@ -92,7 +106,7 @@ class WikipediaClient:
                 "message": str(e),
                 "options": e.options
             }
-        except wikipedia.exceptions.PageError as e:
+        except self.wikipedia.exceptions.PageError as e:
             logger.error(f"Page not found: {title} - {str(e)}")
             debug_log(f"Page not found: {title} - {str(e)}")
             raise ArticleNotFoundError(f"Page not found: {title}")
@@ -114,15 +128,15 @@ class WikipediaClient:
         """
         self._respect_rate_limit()
         try:
-            return wikipedia.summary(title, sentences=sentences)
-        except wikipedia.exceptions.DisambiguationError as e:
+            return self.wikipedia.summary(title, sentences=sentences)
+        except self.wikipedia.exceptions.DisambiguationError as e:
             # Handle disambiguation pages
             options_str = ", ".join(e.options[:10])
             if len(e.options) > 10:
                 options_str += f", and {len(e.options) - 10} more"
             debug_log(f"Disambiguation page found for '{title}': {str(e)}")
             return f"Disambiguation: '{title}' may refer to multiple articles: {options_str}"
-        except wikipedia.exceptions.PageError as e:
+        except self.wikipedia.exceptions.PageError as e:
             logger.error(f"Page not found for summary: {title} - {str(e)}")
             debug_log(f"Page not found for summary: {title} - {str(e)}")
             raise ArticleNotFoundError(f"Page not found: {title}")
@@ -144,7 +158,7 @@ class WikipediaClient:
         sections = []
         
         # Parse HTML to extract sections
-        soup = BeautifulSoup(page.html(), 'html.parser')
+        soup = self.BeautifulSoup(page.html(), 'html.parser')
         
         # Find all headings (h1-h6)
         headings = soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])

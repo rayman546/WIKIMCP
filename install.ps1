@@ -169,7 +169,7 @@ function Update-ClaudeConfig {
         Write-Log "Updated Claude Desktop config to include Wikipedia MCP API" -Level "SUCCESS"
         return $true
     } catch {
-        Write-Log "Failed to update Claude Desktop config: $_" -Level "ERROR"
+        Write-Log "Failed to update Claude Desktop config" -Level "ERROR"
         
         # Restore backup if it exists
         if ($backupPath -and (Test-Path $backupPath)) {
@@ -208,7 +208,7 @@ function Start-WikiMCP {
         Write-Log "Started Wikipedia MCP API server in a new window" -Level "SUCCESS"
         return $true
     } catch {
-        Write-Log "Failed to start Wikipedia MCP API server: $_" -Level "ERROR"
+        Write-Log "Failed to start Wikipedia MCP API server" -Level "ERROR"
         return $false
     }
 }
@@ -251,7 +251,7 @@ function Install-WikiMCP {
             New-Item -Path $RepoPath -ItemType Directory -Force | Out-Null
             Write-Log "Created directory: $RepoPath" -Level "SUCCESS"
         } catch {
-            Write-Log "Failed to create directory $RepoPath: $_" -Level "ERROR"
+            Write-Log "Failed to create directory: $RepoPath" -Level "ERROR"
             return $false
         }
     } else {
@@ -285,7 +285,7 @@ function Install-WikiMCP {
             
             Write-Log "Repository cloned successfully" -Level "SUCCESS"
         } catch {
-            Write-Log "Failed to clone repository: $_" -Level "ERROR"
+            Write-Log "Failed to clone repository" -Level "ERROR"
             return $false
         }
     } else {
@@ -315,7 +315,7 @@ function Install-WikiMCP {
         
         Write-Log "Virtual environment created successfully" -Level "SUCCESS"
     } catch {
-        Write-Log "Failed to create virtual environment: $_" -Level "ERROR"
+        Write-Log "Failed to create virtual environment" -Level "ERROR"
         return $false
     }
     
@@ -335,7 +335,7 @@ function Install-WikiMCP {
         
         Write-Log "Dependencies installed successfully" -Level "SUCCESS"
     } catch {
-        Write-Log "Failed to install dependencies: $_" -Level "ERROR"
+        Write-Log "Failed to install dependencies" -Level "ERROR"
         return $false
     }
     
