@@ -11,8 +11,9 @@ This project provides a RESTful API that serves as a bridge between LLMs and Wik
 - Get article summaries at different detail levels
 - Extract citations
 - Access structured data (tables, infoboxes)
+- Extract article sections with content
 
-The API implements caching to optimize performance and reduce load on the Wikipedia API.
+The API implements unified parsing and multi-level caching to optimize performance and reduce load on the Wikipedia API.
 
 ## Architecture
 
@@ -23,6 +24,14 @@ The Wikipedia MCP API is built with the following components:
 - **BeautifulSoup4**: For HTML parsing and content extraction
 - **Caching System**: Multiple caching strategies (TTL, LRU, persistent)
 
+### Key Features
+
+- **Unified Parsing**: All Wikipedia content is parsed once and cached as a complete structured object
+- **Optimized Caching**: Intelligent caching system to minimize redundant processing
+- **Robust Error Handling**: Comprehensive error handling with appropriate HTTP status codes
+- **Logging**: Structured logging throughout the application
+- **MCP Integration**: Full support for the Model Context Protocol
+
 ## Installation
 
 ### Prerequisites
@@ -31,6 +40,31 @@ The Wikipedia MCP API is built with the following components:
 - pip (Python package manager)
 
 ### Setup
+
+#### Automatic Installation (Windows)
+
+For Windows users, we provide a PowerShell script that automates the installation process:
+
+1. Download the `install.ps1` script from the repository
+2. Open PowerShell as Administrator
+3. Navigate to the directory containing the script
+4. Run the script:
+   ```
+   .\install.ps1
+   ```
+5. Follow the on-screen prompts
+6. Restart Claude Desktop after installation
+
+The script will:
+- Clone the repository (or use an existing one)
+- Set up the Python virtual environment
+- Install all dependencies
+- Configure Claude Desktop
+- Optionally start the server
+
+For more detailed installation instructions and options, see the [INSTALL_CHECKLIST.md](INSTALL_CHECKLIST.md) file.
+
+#### Manual Installation
 
 1. Clone the repository:
    ```
@@ -62,6 +96,12 @@ The Wikipedia MCP API is built with the following components:
 
 ### Starting the Server
 
+Using the run script:
+```
+python run.py
+```
+
+Or directly:
 ```
 python -m src.main
 ```
@@ -133,12 +173,21 @@ GET /api/structured?title={article_title}
 
 Extracts tables and infobox data from a Wikipedia article.
 
+### Get Sections
+
+```
+GET /api/sections?title={article_title}
+```
+
+Extracts all sections with their content from a Wikipedia article.
+
 ## Configuration
 
 The server can be configured through environment variables:
 
 - `PORT`: Server port (default: 8000)
 - `HOST`: Server host (default: 0.0.0.0)
+- `RELOAD`: Enable auto-reload for development (default: True)
 - `CACHE_TYPE`: Caching strategy (ttl, lru, persist) (default: ttl)
 - `CACHE_TTL`: Cache time-to-live in seconds (default: 3600)
 - `CACHE_MAXSIZE`: Maximum cache size (default: 1000)
@@ -192,14 +241,42 @@ The API is designed to meet the following performance constraints:
 - Memory usage: <500MB
 - Cached response time: <2s
 - Efficient caching to reduce Wikipedia API calls
+- Unified parsing to minimize redundant processing
+
+## Error Handling
+
+The API provides consistent error handling:
+
+- `404`: Article not found
+- `422`: Validation error (e.g., invalid parameter)
+- `500`: Server error
+
+All errors return a JSON response with a `detail` field containing the error message.
 
 ## Testing
 
 To run tests:
 
 ```
-pytest
+python -m pytest
 ```
+
+For more detailed output:
+
+```
+python -m pytest -v
+```
+
+## Development
+
+### Branches
+
+- `main`: Stable release branch
+- `refactor-wiki-api`: Branch containing recent refactoring work
+
+### Recent Improvements
+
+See the [REFACTORING_CHECKLIST.md](REFACTORING_CHECKLIST.md) file for details on recent refactoring work.
 
 ## License
 

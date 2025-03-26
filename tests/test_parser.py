@@ -1,5 +1,7 @@
 import pytest
 from bs4 import BeautifulSoup
+import logging
+from unittest.mock import patch
 
 from src.parser import WikipediaParser
 
@@ -49,6 +51,25 @@ TEST_HTML = """
 </html>
 """
 
+# Sample article data for testing
+TEST_ARTICLE_DATA = {
+    "title": "Test Article",
+    "summary": "This is a test summary.",
+    "content": "This is the article content.",
+    "url": "https://example.com/wiki/Test_Article",
+    "html": TEST_HTML,
+    "images": ["https://example.com/image.jpg"],
+    "links": ["Link 1", "Link 2"],
+    "categories": ["Category 1", "Category 2"]
+}
+
+# Sample disambiguation data for testing
+TEST_DISAMBIGUATION = {
+    "error": "disambiguation",
+    "message": "Test Article may refer to multiple articles.",
+    "options": ["Test Article (Science)", "Test Article (Technology)", "Test Article (History)"]
+}
+
 class TestWikipediaParser:
     """Tests for the WikipediaParser class."""
     
@@ -61,6 +82,10 @@ class TestWikipediaParser:
         assert "Content for section 1." in clean_text
         assert "Item 1" in clean_text
         assert "<p>" not in clean_text  # No HTML tags
+        
+        # Test empty input
+        assert WikipediaParser.extract_clean_text("") == ""
+        assert WikipediaParser.extract_clean_text(None) == ""
     
     def test_extract_sections(self):
         """Test extracting sections from HTML."""
@@ -82,6 +107,10 @@ class TestWikipediaParser:
         subsection = next((s for s in sections if s["title"] == "Subsection"), None)
         assert subsection is not None
         assert subsection["level"] == 3
+        
+        # Test empty input
+        assert WikipediaParser.extract_sections("") == []
+        assert WikipediaParser.extract_sections(None) == []
     
     def test_extract_citations(self):
         """Test extracting citations from HTML."""
@@ -96,6 +125,10 @@ class TestWikipediaParser:
         assert citations[1]["id"] == "cite_2"
         assert "Reference 2" in citations[1]["text"]
         assert "http://example.org" in citations[1]["urls"]
+        
+        # Test empty input
+        assert WikipediaParser.extract_citations("") == []
+        assert WikipediaParser.extract_citations(None) == []
     
     def test_extract_tables(self):
         """Test extracting tables from HTML."""
@@ -112,6 +145,10 @@ class TestWikipediaParser:
         
         # The second table could be the infobox, depending on implementation
         assert len(tables) == 2
+        
+        # Test empty input
+        assert WikipediaParser.extract_tables("") == []
+        assert WikipediaParser.extract_tables(None) == []
     
     def test_extract_images(self):
         """Test extracting images from HTML."""
@@ -121,6 +158,10 @@ class TestWikipediaParser:
         
         assert images[0]["src"] == "https://example.com/image.jpg"
         assert images[0]["alt"] == "Example Image"
+        
+        # Test empty input
+        assert WikipediaParser.extract_images("") == []
+        assert WikipediaParser.extract_images(None) == []
     
     def test_extract_infobox(self):
         """Test extracting infobox from HTML."""
@@ -129,39 +170,79 @@ class TestWikipediaParser:
         assert infobox is not None
         assert infobox["Property 1"] == "Value 1"
         assert infobox["Property 2"] == "Value 2"
+        
+        # Test empty input
+        assert WikipediaParser.extract_infobox("") is None
+        assert WikipediaParser.extract_infobox(None) is None
+    
+    def test_parse_article(self):
+        """Test parsing a complete article."""
+        parsed_article = WikipediaParser.parse_article(TEST_ARTICLE_DATA)
+        
+        assert parsed_article["type"] == "article"
+        assert parsed_article["title"] == "Test Article"
+        assert parsed_article["summary"] == "This is a test summary."
+        assert parsed_article["url"] == "https://example.com/wiki/Test_Article"
+        
+        # Verify all components were extracted
+        assert len(parsed_article["sections"]) > 0
+        assert len(parsed_article["citations"]) == 2
+        assert len(parsed_article["tables"]) == 2
+        assert len(parsed_article["images"]) == 1
+        assert parsed_article["infobox"] is not None
+        assert parsed_article["categories"] == ["Category 1", "Category 2"]
+        assert parsed_article["links"] == ["Link 1", "Link 2"]
+    
+    def test_parse_article_disambiguation(self):
+        """Test parsing a disambiguation page."""
+        parsed_article = WikipediaParser.parse_article(TEST_DISAMBIGUATION)
+        
+        assert parsed_article["type"] == "disambiguation"
+        assert parsed_article["title"] == "Unknown"  # Default value when title is not provided
+        assert parsed_article["options"] == TEST_DISAMBIGUATION["options"]
+        assert parsed_article["message"] == TEST_DISAMBIGUATION["message"]
+    
+    @patch("src.parser.WikipediaParser.extract_sections")
+    def test_parse_article_error_handling(self, mock_extract_sections):
+        """Test error handling in parse_article."""
+        # Mock extract_sections to raise an exception
+        mock_extract_sections.side_effect = Exception("Parsing error")
+        
+        # Parse article should handle the exception and return a partial result
+        parsed_article = WikipediaParser.parse_article(TEST_ARTICLE_DATA)
+        
+        assert parsed_article["type"] == "article"
+        assert parsed_article["title"] == "Test Article"
+        assert parsed_article["summary"] == "This is a test summary."
+        assert parsed_article["url"] == "https://example.com/wiki/Test_Article"
+        assert "parse_error" in parsed_article
+        assert "Parsing error" in parsed_article["parse_error"]
     
     def test_format_for_llm(self):
         """Test formatting article data for LLM consumption."""
-        # Create sample article data
-        article_data = {
-            "title": "Test Article",
-            "summary": "This is a test summary.",
-            "content": "This is the article content.",
-            "url": "https://example.com/wiki/Test_Article",
-            "html": TEST_HTML,
-            "images": ["https://example.com/image.jpg"],
-            "links": ["Link 1", "Link 2"],
-            "categories": ["Category 1", "Category 2"],
-            "references": ["Reference 1", "Reference 2"]
-        }
-        
-        formatted_data = WikipediaParser.format_for_llm(article_data)
+        # Test with raw article data
+        formatted_data = WikipediaParser.format_for_llm(TEST_ARTICLE_DATA)
         
         assert formatted_data["type"] == "article"
         assert formatted_data["title"] == "Test Article"
         assert formatted_data["summary"] == "This is a test summary."
         assert formatted_data["url"] == "https://example.com/wiki/Test_Article"
         assert len(formatted_data["sections"]) > 0
-        assert len(formatted_data["citations"]) == 2
-        # There are two tables in the test HTML (regular table and infobox)
-        assert len(formatted_data["tables"]) == 2
-        assert len(formatted_data["images"]) == 1
-        assert formatted_data["infobox"] is not None
-        assert "categories" in formatted_data
-        assert "links" in formatted_data
+        
+        # Test with already parsed article data
+        parsed_article = WikipediaParser.parse_article(TEST_ARTICLE_DATA)
+        formatted_data2 = WikipediaParser.format_for_llm(parsed_article)
+        
+        # Should return the parsed article as is
+        assert formatted_data2 == parsed_article
+        
+        # Test with disambiguation page
+        formatted_disambiguation = WikipediaParser.format_for_llm(TEST_DISAMBIGUATION)
+        assert formatted_disambiguation["type"] == "disambiguation"
     
     def test_generate_summary_short(self):
         """Test generating a short summary."""
+        # Test with raw article data
         article_data = {
             "summary": "First sentence. Second sentence. Third sentence. Fourth sentence. Fifth sentence.",
             "content": "Full content for testing."
@@ -169,55 +250,93 @@ class TestWikipediaParser:
         
         summary = WikipediaParser.generate_summary(article_data, level="short")
         
-        # Should include up to 3 sentences
-        assert "First sentence. Second sentence. Third sentence" in summary
-        assert "Fourth sentence" not in summary
+        # Should include only first few sentences
+        assert "First sentence. Second sentence." in summary
+        assert "Third sentence" not in summary
+        
+        # Test with parsed article data
+        parsed_article = {
+            "type": "article",
+            "title": "Test",
+            "summary": "First sentence. Second sentence. Third sentence.",
+            "sections": []
+        }
+        
+        summary = WikipediaParser.generate_summary(parsed_article, level="short")
+        assert "First sentence. Second sentence." in summary
     
     def test_generate_summary_medium(self):
         """Test generating a medium summary."""
+        # Test with raw article data
         article_data = {
-            "summary": "First paragraph.\nSecond paragraph.\nThird paragraph.",
+            "summary": "Complete medium summary.",
             "content": "Full content for testing."
         }
         
         summary = WikipediaParser.generate_summary(article_data, level="medium")
         
-        # Should include up to 2 paragraphs
-        assert "First paragraph" in summary
-        assert "Second paragraph" in summary
-        assert "Third paragraph" not in summary
+        # Should use the full base summary
+        assert summary == "Complete medium summary."
+        
+        # Test with parsed article data
+        parsed_article = {
+            "type": "article",
+            "title": "Test",
+            "summary": "Complete medium summary.",
+            "sections": []
+        }
+        
+        summary = WikipediaParser.generate_summary(parsed_article, level="medium")
+        assert summary == "Complete medium summary."
     
     def test_generate_summary_long(self):
         """Test generating a long summary."""
-        article_data = {
-            "summary": "Complete summary for testing.",
-            "content": "Full content for testing."
+        # Create parsed article with sections
+        parsed_article = {
+            "type": "article",
+            "title": "Test",
+            "summary": "Base summary.",
+            "sections": [
+                {"level": 1, "title": "Introduction", "text_content": "This is the introduction."},
+                {"level": 2, "title": "History", "text_content": "This is the history section."},
+                {"level": 3, "title": "Details", "text_content": "These are some details."}
+            ]
         }
         
-        summary = WikipediaParser.generate_summary(article_data, level="long")
+        summary = WikipediaParser.generate_summary(parsed_article, level="long")
         
-        # Should include the full summary
-        assert summary == "Complete summary for testing."
+        # Should include base summary plus section highlights
+        assert "Base summary." in summary
+        assert "Introduction: This is the introduction." in summary
+        assert "History: This is the history section." in summary
+        # Level 3 sections might be skipped depending on implementation
+    
+    def test_generate_summary_disambiguation(self):
+        """Test generating a summary for a disambiguation page."""
+        disambiguation = {
+            "error": "disambiguation",
+            "options": ["Option 1", "Option 2", "Option 3"],
+            "message": "May refer to multiple articles."
+        }
+        
+        summary = WikipediaParser.generate_summary(disambiguation, level="short")
+        
+        # Should return a message about disambiguation
+        assert "Disambiguation" in summary
+        assert "Option 1" in summary
+        assert "Option 2" in summary
+        assert "Option 3" in summary
     
     def test_generate_summary_fallback(self):
-        """Test generating a summary when no summary is available."""
+        """Test fallback behavior when no summary is available."""
+        # Article with no summary
         article_data = {
-            "content": "First paragraph.\nSecond paragraph.\nThird paragraph.\nFourth paragraph.\nFifth paragraph."
+            "title": "No Summary",
+            "content": "",
+            "html": "<html><body><p>Some content</p></body></html>"
         }
         
-        # Short summary should include first paragraph
-        short = WikipediaParser.generate_summary(article_data, level="short")
-        assert "First paragraph" in short
-        assert "Second paragraph" not in short
+        summary = WikipediaParser.generate_summary(article_data, level="medium")
         
-        # Medium summary should include first three paragraphs
-        medium = WikipediaParser.generate_summary(article_data, level="medium")
-        assert "First paragraph" in medium
-        assert "Second paragraph" in medium
-        assert "Third paragraph" in medium
-        assert "Fourth paragraph" not in medium
-        
-        # Long summary should include first five paragraphs
-        long = WikipediaParser.generate_summary(article_data, level="long")
-        assert "First paragraph" in long
-        assert "Fifth paragraph" in long 
+        # Should fall back to a default message
+        assert summary == "No summary available." 

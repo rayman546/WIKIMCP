@@ -1,10 +1,20 @@
 import uvicorn
 import os
+import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import routes
 from .api_routes import router as wiki_router, SummaryLevel
+
+# Setup logging
+logger = logging.getLogger(__name__)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 
 # Load environment variables
 PORT = int(os.getenv("PORT", "8000"))
@@ -15,7 +25,7 @@ RELOAD = os.getenv("RELOAD", "True").lower() == "true"
 app = FastAPI(
     title="Wikipedia MCP API",
     description="A Model Context Protocol (MCP) API for interacting with Wikipedia content",
-    version="0.1.0",
+    version="0.2.0",  # Updated version for refactored API
     docs_url="/",  # Swagger UI at root path
 )
 
@@ -70,7 +80,7 @@ async def mcp_definitions():
             },
             {
                 "name": "wikipedia_article",
-                "description": "Get a Wikipedia article by title",
+                "description": "Get a complete Wikipedia article by title with all parsed components",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -90,7 +100,7 @@ async def mcp_definitions():
             },
             {
                 "name": "wikipedia_summary",
-                "description": "Get a summary of a Wikipedia article",
+                "description": "Get a summary of a Wikipedia article at a specific detail level",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -111,7 +121,7 @@ async def mcp_definitions():
             },
             {
                 "name": "wikipedia_citations",
-                "description": "Get citations from a Wikipedia article",
+                "description": "Get citations and references from a Wikipedia article",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -138,10 +148,25 @@ async def mcp_definitions():
                     "required": ["title"]
                 },
                 "endpoint": "/api/structured"
+            },
+            {
+                "name": "wikipedia_sections",
+                "description": "Get the section structure and content from a Wikipedia article",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "The title of the Wikipedia article to get sections from"
+                        }
+                    },
+                    "required": ["title"]
+                },
+                "endpoint": "/api/sections"
             }
         ]
     }
 
 if __name__ == "__main__":
-    print(f"Starting Wikipedia MCP API on {HOST}:{PORT}")
+    logger.info(f"Starting Wikipedia MCP API on {HOST}:{PORT}")
     uvicorn.run("src.main:app", host=HOST, port=PORT, reload=RELOAD) 
