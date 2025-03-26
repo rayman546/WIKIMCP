@@ -2,6 +2,12 @@ from typing import Dict, List, Any, Optional
 from bs4 import BeautifulSoup
 import re
 import logging
+import sys
+
+# Debug log function for console output
+def debug_log(message):
+    """Log to stderr so it doesn't interfere with JSON-RPC communication"""
+    print(message, file=sys.stderr)
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -286,6 +292,7 @@ class WikipediaParser:
         """
         # Check if this is a disambiguation page
         if "error" in article_data and article_data["error"] == "disambiguation":
+            debug_log(f"Processing disambiguation page: {article_data.get('title', 'Unknown')}")
             return {
                 "type": "disambiguation",
                 "title": article_data.get("title", "Unknown"),
@@ -293,51 +300,229 @@ class WikipediaParser:
                 "message": article_data.get("message", "")
             }
         
-        # Get basic data
-        title = article_data.get("title", "Unknown")
-        url = article_data.get("url", "")
-        html_content = article_data.get("html", "")
-        summary = article_data.get("summary", "")
-        
         try:
-            # Parse HTML content for all components in one pass
-            sections = WikipediaParser.extract_sections(html_content)
-            citations = WikipediaParser.extract_citations(html_content)
-            tables = WikipediaParser.extract_tables(html_content)
-            images = WikipediaParser.extract_images(html_content)
-            infobox = WikipediaParser.extract_infobox(html_content)
+            # Get basic data
+            title = article_data.get("title", "Unknown")
+            url = article_data.get("url", "")
+            html_content = article_data.get("html", "")
+            summary = article_data.get("summary", "")
             
-            # Create unified result
+            debug_log(f"Parsing article: {title}")
+            
+            # Parse HTML content with BeautifulSoup
+            soup = BeautifulSoup(html_content, "html.parser")
+            
+            # Extract data using specialized methods
+            citations = WikipediaParser._extract_citations(soup)
+            sections = WikipediaParser._extract_sections(soup)
+            tables = WikipediaParser._extract_tables(soup)
+            images = WikipediaParser._extract_images(soup)
+            infobox = WikipediaParser._extract_infobox(soup)
+            
+            # Return comprehensive article data
             return {
                 "type": "article",
                 "title": title,
-                "url": url,
                 "summary": summary,
+                "url": url,
                 "sections": sections,
                 "citations": citations,
                 "tables": tables,
                 "images": images,
-                "infobox": infobox or {},
+                "infobox": infobox,
                 "categories": article_data.get("categories", []),
                 "links": article_data.get("links", [])
             }
         except Exception as e:
-            logger.error(f"Error parsing article '{title}': {str(e)}")
-            # Return a partial result with at least the basic information
+            logger.error(f"Error parsing article: {str(e)}")
+            debug_log(f"Error parsing article: {str(e)}")
+            # Return a minimal valid response with error information
             return {
                 "type": "article",
-                "title": title,
-                "url": url,
-                "summary": summary,
+                "title": article_data.get("title", "Unknown"),
+                "summary": article_data.get("summary", ""),
+                "url": article_data.get("url", ""),
+                "error": str(e),
                 "sections": [],
                 "citations": [],
                 "tables": [],
                 "images": [],
                 "infobox": {},
                 "categories": article_data.get("categories", []),
-                "links": article_data.get("links", []),
-                "parse_error": str(e)
+                "links": article_data.get("links", [])
             }
+    
+    @staticmethod
+    def _extract_citations(soup: BeautifulSoup) -> List[Dict[str, str]]:
+        """Extract citations from the article."""
+        try:
+            citations = []
+            cite_notes = soup.select(".reference-text")
+            
+            for i, cite in enumerate(cite_notes):
+                citation_text = cite.get_text().strip()
+                citations.append({
+                    "id": i + 1,
+                    "text": citation_text
+                })
+            
+            return citations
+        except Exception as e:
+            logger.error(f"Error extracting citations: {str(e)}")
+            debug_log(f"Error extracting citations: {str(e)}")
+            return []
+    
+    @staticmethod
+    def _extract_sections(soup: BeautifulSoup) -> List[Dict[str, Any]]:
+        """Extract sections with hierarchical structure."""
+        try:
+            sections = []
+            current_section = None
+            
+            # Find all headings
+            headings = soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"])
+            
+            for heading in headings:
+                # Skip table of contents and reference sections
+                if heading.get("id") == "toc" or "References" in heading.get_text():
+                    continue
+                
+                # Get heading level
+                level = int(heading.name[1])
+                title = heading.get_text().strip()
+                
+                # Get section content
+                content = ""
+                next_tag = heading.find_next_sibling()
+                while next_tag and next_tag.name not in ["h1", "h2", "h3", "h4", "h5", "h6"]:
+                    if next_tag.name in ["p", "ul", "ol"]:
+                        content += next_tag.get_text().strip() + "\n\n"
+                    next_tag = next_tag.find_next_sibling()
+                
+                # Create section object
+                section = {
+                    "level": level,
+                    "title": title,
+                    "content": content.strip(),
+                    "subsections": []
+                }
+                
+                # Add to section hierarchy
+                if level == 2:  # Top-level section
+                    sections.append(section)
+                    current_section = section
+                elif level > 2 and current_section:  # Subsection
+                    current_section["subsections"].append(section)
+            
+            return sections
+        except Exception as e:
+            logger.error(f"Error extracting sections: {str(e)}")
+            debug_log(f"Error extracting sections: {str(e)}")
+            return []
+    
+    @staticmethod
+    def _extract_tables(soup: BeautifulSoup) -> List[Dict[str, Any]]:
+        """Extract tables from the article."""
+        try:
+            tables = []
+            table_elements = soup.select("table.wikitable")
+            
+            for i, table in enumerate(table_elements):
+                # Get table caption/title
+                caption = table.find("caption")
+                title = caption.get_text().strip() if caption else f"Table {i+1}"
+                
+                # Get table headers
+                headers = []
+                header_row = table.select_one("tr th") and table.select("tr th")
+                if header_row:
+                    headers = [th.get_text().strip() for th in header_row]
+                
+                # Get table rows
+                rows = []
+                data_rows = table.select("tr")
+                for row in data_rows:
+                    # Skip header row
+                    if row.find("th") and row.find("th").parent == row:
+                        continue
+                    
+                    cells = [td.get_text().strip() for td in row.find_all(["td"])]
+                    if cells:
+                        rows.append(cells)
+                
+                tables.append({
+                    "title": title,
+                    "headers": headers,
+                    "rows": rows
+                })
+            
+            return tables
+        except Exception as e:
+            logger.error(f"Error extracting tables: {str(e)}")
+            debug_log(f"Error extracting tables: {str(e)}")
+            return []
+    
+    @staticmethod
+    def _extract_images(soup: BeautifulSoup) -> List[Dict[str, str]]:
+        """Extract images from the article."""
+        try:
+            images = []
+            image_elements = soup.select(".image img")
+            
+            for img in image_elements:
+                src = img.get("src", "")
+                if src and not src.startswith("data:"):
+                    # Ensure src is a full URL
+                    if src.startswith("//"):
+                        src = "https:" + src
+                    
+                    # Get caption if available
+                    caption = ""
+                    caption_element = img.parent.parent.find("div", class_="thumbcaption")
+                    if caption_element:
+                        caption = caption_element.get_text().strip()
+                    
+                    images.append({
+                        "src": src,
+                        "caption": caption,
+                        "alt": img.get("alt", "")
+                    })
+            
+            return images
+        except Exception as e:
+            logger.error(f"Error extracting images: {str(e)}")
+            debug_log(f"Error extracting images: {str(e)}")
+            return []
+    
+    @staticmethod
+    def _extract_infobox(soup: BeautifulSoup) -> Dict[str, str]:
+        """Extract infobox data from the article."""
+        try:
+            infobox = {}
+            infobox_table = soup.select_one(".infobox")
+            
+            if infobox_table:
+                # Process each row in the infobox
+                rows = infobox_table.select("tr")
+                for row in rows:
+                    # Skip rows without th elements
+                    if not row.find("th"):
+                        continue
+                    
+                    key = row.find("th").get_text().strip()
+                    value = row.find("td").get_text().strip() if row.find("td") else ""
+                    
+                    # Clean up the value (remove citation numbers, etc.)
+                    value = re.sub(r'\[\d+\]', '', value)
+                    
+                    if key and value:
+                        infobox[key] = value
+            
+            return infobox
+        except Exception as e:
+            logger.error(f"Error extracting infobox: {str(e)}")
+            debug_log(f"Error extracting infobox: {str(e)}")
+            return {}
     
     @staticmethod
     def format_for_llm(article_data: Dict[str, Any]) -> Dict[str, Any]:

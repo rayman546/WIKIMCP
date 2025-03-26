@@ -6,6 +6,10 @@ import os
 import sys
 import argparse
 
+def debug_log(message):
+    """Log to stderr so it doesn't interfere with JSON-RPC communication"""
+    print(message, file=sys.stderr)
+
 def main():
     """Main entry point for running the server."""
     parser = argparse.ArgumentParser(description="Start the Wikipedia MCP API server")
@@ -39,21 +43,32 @@ def main():
     
     # Import and run the app
     try:
+        # This should catch import errors and handle them properly
+        debug_log(f"Starting Wikipedia MCP API on {args.host}:{args.port}")
+        debug_log(f"Cache: {args.cache_type} (TTL: {args.cache_ttl}s, Max Size: {args.cache_maxsize})")
+        debug_log(f"Rate Limit: {args.rate_limit}s between requests")
+        debug_log(f"Auto-reload: {'disabled' if args.no_reload else 'enabled'}")
+        
+        # Move these imports inside the try block to catch all import errors
+        try:
+            import wikipedia
+        except ImportError:
+            debug_log("Error: No module named 'wikipedia'")
+            debug_log("Make sure you have installed all dependencies: pip install -r requirements.txt")
+            sys.exit(1)
+            
         from src.main import app
         import uvicorn
         
-        print(f"Starting Wikipedia MCP API on {args.host}:{args.port}")
-        print(f"Cache: {args.cache_type} (TTL: {args.cache_ttl}s, Max Size: {args.cache_maxsize})")
-        print(f"Rate Limit: {args.rate_limit}s between requests")
-        print(f"Auto-reload: {'disabled' if args.no_reload else 'enabled'}")
-        
         uvicorn.run("src.main:app", host=args.host, port=args.port, reload=not args.no_reload)
     except ImportError as e:
-        print(f"Error: {e}")
-        print("Make sure you have installed all dependencies: pip install -r requirements.txt")
+        # Use debug_log to ensure error message goes to stderr
+        debug_log(f"Error: {e}")
+        debug_log("Make sure you have installed all dependencies: pip install -r requirements.txt")
         sys.exit(1)
     except Exception as e:
-        print(f"Error starting server: {e}")
+        # Use debug_log to ensure error message goes to stderr
+        debug_log(f"Error starting server: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
