@@ -1,5 +1,6 @@
 import uvicorn
 import os
+import sys
 import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,13 +8,19 @@ from fastapi.middleware.cors import CORSMiddleware
 # Import routes
 from .api_routes import router as wiki_router, SummaryLevel
 
+# Define debug log function for console output
+def debug_log(message):
+    """Log to stderr so it doesn't interfere with JSON-RPC communication"""
+    print(message, file=sys.stderr)
+
 # Setup logging
 logger = logging.getLogger(__name__)
 
-# Configure logging
+# Configure logging to use stderr
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    stream=sys.stderr  # Ensure logs go to stderr
 )
 
 # Load environment variables
@@ -168,5 +175,5 @@ async def mcp_definitions():
     }
 
 if __name__ == "__main__":
-    logger.info(f"Starting Wikipedia MCP API on {HOST}:{PORT}")
+    debug_log(f"Starting Wikipedia MCP API on {HOST}:{PORT}")
     uvicorn.run("src.main:app", host=HOST, port=PORT, reload=RELOAD) 

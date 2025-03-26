@@ -1,8 +1,14 @@
 import time
 import wikipedia
 import logging
+import sys
 from typing import Dict, List, Optional, Union, Any
 from bs4 import BeautifulSoup
+
+# Debug log function for console output
+def debug_log(message):
+    """Log to stderr so it doesn't interfere with JSON-RPC communication"""
+    print(message, file=sys.stderr)
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -50,6 +56,7 @@ class WikipediaClient:
             return wikipedia.search(query, results=results)
         except Exception as e:
             logger.error(f"Wikipedia search error: {str(e)}")
+            debug_log(f"Wikipedia search error: {str(e)}")
             raise Exception(f"Wikipedia search error: {str(e)}")
     
     def get_article(self, title: str, auto_suggest: bool = True) -> Dict[str, Any]:
@@ -79,6 +86,7 @@ class WikipediaClient:
         except wikipedia.exceptions.DisambiguationError as e:
             # Handle disambiguation pages
             logger.info(f"Disambiguation page found for '{title}': {str(e)}")
+            debug_log(f"Disambiguation page found for '{title}': {str(e)}")
             return {
                 "error": "disambiguation",
                 "message": str(e),
@@ -86,9 +94,11 @@ class WikipediaClient:
             }
         except wikipedia.exceptions.PageError as e:
             logger.error(f"Page not found: {title} - {str(e)}")
+            debug_log(f"Page not found: {title} - {str(e)}")
             raise ArticleNotFoundError(f"Page not found: {title}")
         except Exception as e:
             logger.error(f"Error retrieving article '{title}': {str(e)}")
+            debug_log(f"Error retrieving article '{title}': {str(e)}")
             raise Exception(f"Error retrieving article: {str(e)}")
     
     def get_summary(self, title: str, sentences: int = 5) -> str:
@@ -110,12 +120,15 @@ class WikipediaClient:
             options_str = ", ".join(e.options[:10])
             if len(e.options) > 10:
                 options_str += f", and {len(e.options) - 10} more"
+            debug_log(f"Disambiguation page found for '{title}': {str(e)}")
             return f"Disambiguation: '{title}' may refer to multiple articles: {options_str}"
         except wikipedia.exceptions.PageError as e:
             logger.error(f"Page not found for summary: {title} - {str(e)}")
+            debug_log(f"Page not found for summary: {title} - {str(e)}")
             raise ArticleNotFoundError(f"Page not found: {title}")
         except Exception as e:
             logger.error(f"Error retrieving summary for '{title}': {str(e)}")
+            debug_log(f"Error retrieving summary for '{title}': {str(e)}")
             raise Exception(f"Error retrieving summary: {str(e)}")
     
     def _extract_sections(self, page) -> List[Dict[str, Any]]:

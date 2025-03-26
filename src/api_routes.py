@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 from fastapi import APIRouter, HTTPException, Query, Depends
 from typing import List, Dict, Any, Optional
@@ -7,6 +8,11 @@ from enum import Enum
 from .wikipedia_client import WikipediaClient, ArticleNotFoundError
 from .caching_service import CachingService, cached
 from .parser import WikipediaParser
+
+# Debug log function for console output
+def debug_log(message):
+    """Log to stderr so it doesn't interfere with JSON-RPC communication"""
+    print(message, file=sys.stderr)
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -27,27 +33,39 @@ class SummaryLevel(str, Enum):
     MEDIUM = "medium"
     LONG = "long"
 
-# Initialize services (will be dependency injected)
-def get_wikipedia_client() -> WikipediaClient:
+# Dependency to get WikipediaClient
+def get_wikipedia_client():
+    """Get a WikipediaClient instance with proper rate limiting."""
     return WikipediaClient(rate_limit_delay=RATE_LIMIT)
 
-def get_cache_service() -> CachingService:
+# Dependency to get CachingService
+def get_cache_service():
+    """Get a CachingService instance with proper configuration."""
     return CachingService(
         cache_type=CACHE_TYPE,
-        maxsize=CACHE_MAXSIZE,
         ttl=CACHE_TTL,
+        maxsize=CACHE_MAXSIZE,
         cache_dir=CACHE_DIR
     )
 
-# Helper functions
-def handle_disambiguation(article_data: Dict[str, Any], title: str) -> Dict[str, Any]:
-    """Handle disambiguation pages consistently across endpoints."""
+# Helper function for disambiguation handling
+def handle_disambiguation(article_data, title):
+    """Handle disambiguation pages and return appropriate response."""
     if "error" in article_data and article_data["error"] == "disambiguation":
+        options = article_data.get("options", [])
+        options_formatted = [f"- {option}" for option in options[:10]]
+        if len(options) > 10:
+            options_formatted.append(f"- ... and {len(options) - 10} more options")
+        
+        options_str = "\n".join(options_formatted)
+        message = f"The article '{title}' could refer to multiple articles:\n\n{options_str}\n\nPlease specify a more specific title."
+        
+        debug_log(f"Disambiguation found for '{title}' with {len(options)} options")
         return {
             "type": "disambiguation",
             "title": title,
-            "options": article_data.get("options", []),
-            "message": article_data.get("message", "")
+            "message": message,
+            "options": options
         }
     return None
 
@@ -70,9 +88,11 @@ def get_parsed_article(title: str, auto_suggest: bool, wiki_client: WikipediaCli
     # Try to get from cache first
     cached_article = cache_service.get(cache_key)
     if cached_article:
+        debug_log(f"Cache hit for article: {title}")
         return cached_article
     
     try:
+        debug_log(f"Cache miss for article: {title}, fetching from Wikipedia")
         # Get raw article data
         cached_get_article = cached(cache_service, key_prefix="raw_article")(wiki_client.get_article)
         raw_article_data = cached_get_article(title, auto_suggest=auto_suggest)
@@ -91,9 +111,11 @@ def get_parsed_article(title: str, auto_suggest: bool, wiki_client: WikipediaCli
         return parsed_article
     except ArticleNotFoundError as e:
         logger.warning(f"Article not found: {title}")
+        debug_log(f"Article not found: {title}")
         raise HTTPException(status_code=404, detail=f"Article not found: {title}")
     except Exception as e:
         logger.error(f"Error retrieving article: {str(e)}")
+        debug_log(f"Error retrieving article: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error retrieving article: {str(e)}")
 
 # Routes
@@ -115,6 +137,7 @@ async def search_wikipedia(
         List of matching article titles
     """
     try:
+        debug_log(f"Searching Wikipedia for '{term}' with {results} results")
         # Create cache decorator
         cached_search = cached(cache_service, key_prefix="search")(wiki_client.search)
         
@@ -128,6 +151,7 @@ async def search_wikipedia(
         }
     except Exception as e:
         logger.error(f"Search error: {str(e)}")
+        debug_log(f"Search error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/article", response_model=Dict[str, Any])
