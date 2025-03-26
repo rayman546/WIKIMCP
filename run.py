@@ -4,11 +4,26 @@ Run script for starting the Wikipedia MCP API server.
 """
 import os
 import sys
+import socket
+import errno
 import argparse
 
 def debug_log(message):
     """Log to stderr so it doesn't interfere with JSON-RPC communication"""
     print(message, file=sys.stderr)
+
+def is_port_in_use(host, port):
+    """Check if the specified port is already in use"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+            return False  # Port is free
+        except socket.error as e:
+            if e.errno == errno.EADDRINUSE or e.errno == 10048:  # Address already in use
+                return True
+            else:
+                # Some other socket error
+                raise
 
 def main():
     """Main entry point for running the server."""
@@ -28,6 +43,12 @@ def main():
                         help="Disable auto-reload in development")
     
     args = parser.parse_args()
+    
+    # Check if port is already in use
+    if is_port_in_use(args.host, args.port):
+        debug_log(f"Wikipedia MCP API is already running on {args.host}:{args.port}")
+        debug_log("Using existing server instance.")
+        sys.exit(0)  # Exit successfully without error
     
     # Set environment variables
     os.environ["HOST"] = args.host

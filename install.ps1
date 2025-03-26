@@ -132,21 +132,12 @@ function Backup-ConfigFile {
 function Update-ClaudeConfig {
     param (
         [string]$ConfigPath,
-        [string]$ServerPath
+        [string]$ServerPath,
+        [string]$VenvPath
     )
     
     try {
-        # Create default config if it doesn't exist
-        if (-not (Test-Path $ConfigPath)) {
-            Write-Log "Creating new Claude Desktop config file" -Level "INFO"
-            $defaultConfig = @{
-                mcpServers = @{}
-            } | ConvertTo-Json -Depth 10
-            New-Item -Path (Split-Path $ConfigPath -Parent) -ItemType Directory -Force | Out-Null
-            Set-Content -Path $ConfigPath -Value $defaultConfig
-        }
-        
-        # Backup existing config
+        # Create backup of the config file
         $backupPath = Backup-ConfigFile -ConfigPath $ConfigPath
         
         # Read the current config
@@ -159,8 +150,9 @@ function Update-ClaudeConfig {
         
         # Add or update the wikipedia-mcp server
         $scriptPath = Join-Path $ServerPath "run.py"
+        $pythonExePath = Join-Path $VenvPath "Scripts\python.exe"
         $config.mcpServers | Add-Member -NotePropertyName "wikipedia-mcp" -NotePropertyValue @{
-            command = "python"
+            command = $pythonExePath
             args = @($scriptPath)
         } -Force
         
@@ -342,7 +334,7 @@ function Install-WikiMCP {
     # Update Claude Desktop configuration
     if ($ModifyConfig) {
         Write-Log "Updating Claude Desktop configuration..." -Level "INFO"
-        $configSuccess = Update-ClaudeConfig -ConfigPath $ClaudeConfigPath -ServerPath $RepoPath
+        $configSuccess = Update-ClaudeConfig -ConfigPath $ClaudeConfigPath -ServerPath $RepoPath -VenvPath $VenvPath
         
         if (-not $configSuccess) {
             Write-Log "Failed to update Claude Desktop configuration" -Level "ERROR"
