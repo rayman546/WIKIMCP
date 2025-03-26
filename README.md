@@ -41,6 +41,31 @@ The Wikipedia MCP API is built with the following components:
 
 ### Setup
 
+#### Automatic Installation (Windows)
+
+For Windows users, we provide a PowerShell script that automates the installation process:
+
+1. Download the `install.ps1` script from the repository
+2. Open PowerShell as Administrator
+3. Navigate to the directory containing the script
+4. Run the script:
+   ```
+   .\install.ps1
+   ```
+5. Follow the on-screen prompts
+6. Restart Claude Desktop after installation
+
+The script will:
+- Clone the repository (or use an existing one)
+- Set up the Python virtual environment
+- Install all dependencies
+- Configure Claude Desktop
+- Optionally start the server
+
+For more detailed installation instructions and options, see the [INSTALL_CHECKLIST.md](INSTALL_CHECKLIST.md) file.
+
+#### Manual Installation
+
 1. Clone the repository:
    ```
    git clone https://github.com/yourusername/wikipedia-mcp-api.git

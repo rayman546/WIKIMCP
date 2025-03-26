@@ -1,0 +1,5 @@
+[33me37eea7[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mrefactor-wiki-api[m[33m)[m Update README.md with refactoring details and new features
+[33m6f49b96[m Add refactoring checklist with progress tracking
+[33me4722b9[m Update tests to work with refactored code
+[33mbe26a87[m Refactor: API and data processing improvements
+[33m3da0dc0[m[33m ([m[1;31morigin/main[m[33m, [m[1;32mmain[m[33m)[m Add GitHub setup instructions
