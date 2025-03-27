@@ -1,314 +1,265 @@
-import os
-import sys
+"""
+API routes for the Wikipedia MCP API.
+"""
 import logging
-from fastapi import APIRouter, HTTPException, Query, Depends
-from typing import List, Dict, Any, Optional
-from enum import Enum
-
-from .wikipedia_client import WikipediaClient, ArticleNotFoundError
-from .caching_service import CachingService, cached
+from typing import Optional
+from fastapi import APIRouter, Depends, Request, Response
+from fastapi.responses import JSONResponse
+from .models import (
+    ArticleResponse,
+    SearchResponse,
+    StatsResponse,
+    NotFoundError,
+    ValidationError,
+    RateLimitError,
+    ParsingError,
+    WikipediaError,
+    CacheError
+)
+from .api_utils import (
+    create_error_response,
+    create_success_response,
+    add_cors_headers,
+    add_security_headers,
+    log_request,
+    get_cache_info
+)
+from .wikipedia_client import WikipediaClient
+from .caching_service import CachingService
 from .parser import WikipediaParser
-
-# Debug log function for console output
-def debug_log(message):
-    """Log to stderr so it doesn't interfere with JSON-RPC communication"""
-    print(message, file=sys.stderr)
+from .config import settings
+from .models import APIError # Import APIError base class
 
 # Setup logging
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-CACHE_TYPE = os.getenv("CACHE_TYPE", "ttl")
-CACHE_TTL = int(os.getenv("CACHE_TTL", "3600"))
-CACHE_MAXSIZE = int(os.getenv("CACHE_MAXSIZE", "1000"))
-CACHE_DIR = os.getenv("CACHE_DIR", None)
-RATE_LIMIT = float(os.getenv("RATE_LIMIT", "1.0"))
-
 # Create router
-router = APIRouter(tags=["Wikipedia"])
+router = APIRouter()
 
-# Define enum for level parameter validation
-class SummaryLevel(str, Enum):
-    SHORT = "short"
-    MEDIUM = "medium"
-    LONG = "long"
+# Dependency functions to get singletons from app.state
+def get_wikipedia_client_instance(request: Request) -> WikipediaClient:
+    """Get singleton Wikipedia client instance from app state."""
+    return request.app.state.wikipedia_client
 
-# Dependency to get WikipediaClient
-def get_wikipedia_client():
-    """Get a WikipediaClient instance with proper rate limiting."""
-    return WikipediaClient(rate_limit_delay=RATE_LIMIT)
+def get_cache_service_instance(request: Request) -> CachingService:
+    """Get singleton cache service instance from app state."""
+    return request.app.state.cache_service
 
-# Dependency to get CachingService
-def get_cache_service():
-    """Get a CachingService instance with proper configuration."""
-    return CachingService(
-        cache_type=CACHE_TYPE,
-        ttl=CACHE_TTL,
-        maxsize=CACHE_MAXSIZE,
-        cache_dir=CACHE_DIR
-    )
+def get_parser_instance(request: Request) -> WikipediaParser:
+    """Get singleton parser instance from app state."""
+    return request.app.state.parser
 
-# Helper function for disambiguation handling
-def handle_disambiguation(article_data, title):
-    """Handle disambiguation pages and return appropriate response."""
-    if "error" in article_data and article_data["error"] == "disambiguation":
-        options = article_data.get("options", [])
-        options_formatted = [f"- {option}" for option in options[:10]]
-        if len(options) > 10:
-            options_formatted.append(f"- ... and {len(options) - 10} more options")
-        
-        options_str = "\n".join(options_formatted)
-        message = f"The article '{title}' could refer to multiple articles:\n\n{options_str}\n\nPlease specify a more specific title."
-        
-        debug_log(f"Disambiguation found for '{title}' with {len(options)} options")
-        return {
-            "type": "disambiguation",
-            "title": title,
-            "message": message,
-            "options": options
-        }
-    return None
-
-def get_parsed_article(title: str, auto_suggest: bool, wiki_client: WikipediaClient, cache_service: CachingService) -> Dict[str, Any]:
-    """
-    Central function to get and parse a Wikipedia article.
-    
-    Args:
-        title: Article title
-        auto_suggest: Whether to auto-suggest similar titles
-        wiki_client: WikipediaClient instance
-        cache_service: CachingService instance
-        
-    Returns:
-        Parsed article data
-    """
-    # Create cache key for the parsed article
-    cache_key = f"parsed_article:{title}"
-    
-    # Try to get from cache first
-    cached_article = cache_service.get(cache_key)
-    if cached_article:
-        debug_log(f"Cache hit for article: {title}")
-        return cached_article
-    
-    try:
-        debug_log(f"Cache miss for article: {title}, fetching from Wikipedia")
-        # Get raw article data
-        cached_get_article = cached(cache_service, key_prefix="raw_article")(wiki_client.get_article)
-        raw_article_data = cached_get_article(title, auto_suggest=auto_suggest)
-        
-        # Check for disambiguation
-        disambiguation = handle_disambiguation(raw_article_data, title)
-        if disambiguation:
-            return disambiguation
-        
-        # Parse the article
-        parsed_article = WikipediaParser.parse_article(raw_article_data)
-        
-        # Cache the parsed result
-        cache_service.set(cache_key, parsed_article)
-        
-        return parsed_article
-    except ArticleNotFoundError as e:
-        logger.warning(f"Article not found: {title}")
-        debug_log(f"Article not found: {title}")
-        raise HTTPException(status_code=404, detail=f"Article not found: {title}")
-    except Exception as e:
-        logger.error(f"Error retrieving article: {str(e)}")
-        debug_log(f"Error retrieving article: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error retrieving article: {str(e)}")
-
-# Routes
-@router.get("/search", response_model=Dict[str, Any])
-async def search_wikipedia(
-    term: str = Query(..., description="Search term"),
-    results: int = Query(10, description="Number of results to return", ge=1, le=50),
-    wiki_client: WikipediaClient = Depends(get_wikipedia_client),
-    cache_service: CachingService = Depends(get_cache_service)
-):
-    """
-    Search for Wikipedia articles matching the term.
-    
-    Args:
-        term: Search term
-        results: Number of results to return (1-50)
-        
-    Returns:
-        List of matching article titles
-    """
-    try:
-        debug_log(f"Searching Wikipedia for '{term}' with {results} results")
-        # Create cache decorator
-        cached_search = cached(cache_service, key_prefix="search")(wiki_client.search)
-        
-        # Perform search
-        search_results = cached_search(term, results=results)
-        
-        return {
-            "query": term,
-            "results": search_results,
-            "count": len(search_results)
-        }
-    except Exception as e:
-        logger.error(f"Search error: {str(e)}")
-        debug_log(f"Search error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/article", response_model=Dict[str, Any])
+@router.get("/article/{title}")
 async def get_article(
-    title: str = Query(..., description="Article title"),
-    auto_suggest: bool = Query(True, description="Whether to auto-suggest similar titles"),
-    wiki_client: WikipediaClient = Depends(get_wikipedia_client),
-    cache_service: CachingService = Depends(get_cache_service)
-):
+    request: Request,
+    response: Response,
+    title: str,
+    # Removed unused parameters: sections, images, references
+    wikipedia: WikipediaClient = Depends(get_wikipedia_client_instance),
+    cache: CachingService = Depends(get_cache_service_instance),
+    parser: WikipediaParser = Depends(get_parser_instance)
+) -> ArticleResponse:
     """
-    Get a Wikipedia article by title.
+    Get Wikipedia article by title.
     
     Args:
+        request: FastAPI request
+        response: FastAPI response
         title: Article title
-        auto_suggest: Whether to auto-suggest similar titles
-        
-    Returns:
-        Formatted article data
-    """
-    return get_parsed_article(title, auto_suggest, wiki_client, cache_service)
+        # Removed unused parameters from docstring
+        wikipedia: Wikipedia client
+        cache: Cache service
+        parser: Wikipedia parser
 
-@router.get("/summary", response_model=Dict[str, Any])
-async def get_summary(
-    title: str = Query(..., description="Article title"),
-    level: SummaryLevel = Query(SummaryLevel.MEDIUM, description="Detail level (short, medium, long)"),
-    wiki_client: WikipediaClient = Depends(get_wikipedia_client),
-    cache_service: CachingService = Depends(get_cache_service)
-):
-    """
-    Get a summary of a Wikipedia article.
-    
-    Args:
-        title: Article title
-        level: Detail level (short, medium, long)
-        
     Returns:
-        Article summary
+        Article response
     """
-    # Get parsed article data
-    parsed_article = get_parsed_article(title, True, wiki_client, cache_service)
-    
-    # For disambiguation pages, just return as is
-    if parsed_article.get("type") == "disambiguation":
-        return parsed_article
-    
-    # Generate summary
-    summary = WikipediaParser.generate_summary(parsed_article, level=level)
-    
-    # Create response
-    return {
-        "type": "summary",
-        "title": parsed_article.get("title", title),
-        "level": level,
-        "summary": summary,
-        "url": parsed_article.get("url", "")
-    }
+    # Increment request counter
+    request.app.state.api_stats["requests"] += 1
+    try:
+        # Check cache first (Cache key simplified as params are removed)
+        cache_key = f"article:{title}"
+        cached_article = cache.get(cache_key)
+        if cached_article:
+            logger.debug(f"Cache hit for article: {title}")
+            return create_success_response(
+                {
+                    "article": cached_article,
+                    "cache_info": get_cache_info(request, hit=True)
+                },
+                ArticleResponse
+            )
+        logger.debug(f"Cache miss for article: {title}")
 
-@router.get("/citations", response_model=Dict[str, Any])
-async def get_citations(
-    title: str = Query(..., description="Article title"),
-    wiki_client: WikipediaClient = Depends(get_wikipedia_client),
-    cache_service: CachingService = Depends(get_cache_service)
-):
-    """
-    Get citations from a Wikipedia article.
-    
-    Args:
-        title: Article title
-        
-    Returns:
-        List of citations
-    """
-    # Get parsed article data
-    parsed_article = get_parsed_article(title, True, wiki_client, cache_service)
-    
-    # For disambiguation pages, just return as is
-    if parsed_article.get("type") == "disambiguation":
-        return parsed_article
-    
-    # Extract citations from parsed data
-    citations = parsed_article.get("citations", [])
-    
-    # Create response
-    return {
-        "type": "citations",
-        "title": parsed_article.get("title", title),
-        "url": parsed_article.get("url", ""),
-        "count": len(citations),
-        "citations": citations
-    }
+        # Get article from Wikipedia using executor for sync call
+        article = await request.app.loop.run_in_executor(
+            None, wikipedia.get_article, title
+        )
 
-@router.get("/structured", response_model=Dict[str, Any])
-async def get_structured(
-    title: str = Query(..., description="Article title"),
-    wiki_client: WikipediaClient = Depends(get_wikipedia_client),
-    cache_service: CachingService = Depends(get_cache_service)
-):
-    """
-    Get structured data (tables, infobox) from a Wikipedia article.
-    
-    Args:
-        title: Article title
-        
-    Returns:
-        Structured data
-    """
-    # Get parsed article data
-    parsed_article = get_parsed_article(title, True, wiki_client, cache_service)
-    
-    # For disambiguation pages, just return as is
-    if parsed_article.get("type") == "disambiguation":
-        return parsed_article
-    
-    # Extract structured data from parsed data
-    tables = parsed_article.get("tables", [])
-    infobox = parsed_article.get("infobox", {})
-    
-    # Create response
-    return {
-        "type": "structured",
-        "title": parsed_article.get("title", title),
-        "url": parsed_article.get("url", ""),
-        "tables": tables,
-        "infobox": infobox,
-        "tables_count": len(tables)
-    }
+        # Handle disambiguation or not found directly from client
+        # (Will refactor client to raise specific errors later)
+        if isinstance(article, dict) and article.get("error") == "disambiguation":
+             # TODO: Refactor client to raise DisambiguationAPIError
+             raise ValidationError("Disambiguation error", details={"options": article.get("options", [])})
+        if not article: # Should be handled by client raising NotFoundError
+             raise NotFoundError(f"Article not found: {title}")
 
-@router.get("/sections", response_model=Dict[str, Any])
-async def get_sections(
-    title: str = Query(..., description="Article title"),
-    wiki_client: WikipediaClient = Depends(get_wikipedia_client),
-    cache_service: CachingService = Depends(get_cache_service)
-):
+        # Parse article using executor for sync call
+        # TODO: Pass sections, images, references if parser supports them
+        parsed = await request.app.loop.run_in_executor(
+            None, parser.parse_article, article
+        )
+
+        # Cache the parsed result
+        cache.set(cache_key, parsed)
+
+        # Create response
+        return create_success_response(
+            {
+                "article": parsed,
+                "cache_info": get_cache_info(request, hit=False)
+            },
+            ArticleResponse
+        )
+
+    except APIError as e:
+        # Increment error counter for known API errors
+        request.app.state.api_stats["errors"] += 1
+        logger.warning(f"API Error getting article '{title}': {e.code} - {e.message}")
+        raise e # Re-raise to be handled by the exception handler
+    except Exception as e:
+        # Increment error counter for unexpected errors
+        request.app.state.api_stats["errors"] += 1
+        logger.error(f"Unexpected error getting article '{title}': {str(e)}", exc_info=True)
+        # Wrap unexpected errors in a generic APIError
+        raise WikipediaError(f"An unexpected error occurred: {str(e)}")
+    # finally block removed - headers/logging can be handled by middleware or dependencies
+
+@router.get("/search")
+async def search_articles(
+    request: Request,
+    response: Response,
+    query: str,
+    limit: Optional[int] = 10,
+    wikipedia: WikipediaClient = Depends(get_wikipedia_client_instance),
+    cache: CachingService = Depends(get_cache_service_instance)
+) -> SearchResponse:
     """
-    Get sections from a Wikipedia article.
+    Search Wikipedia articles.
     
     Args:
-        title: Article title
-        
+        request: FastAPI request
+        response: FastAPI response
+        query: Search query
+        limit: Maximum number of results
+        wikipedia: Wikipedia client
+        cache: Cache service
+
     Returns:
-        List of sections with content
+        Search response
     """
-    # Get parsed article data
-    parsed_article = get_parsed_article(title, True, wiki_client, cache_service)
+    # Increment request counter
+    request.app.state.api_stats["requests"] += 1
+    try:
+        # Validate input
+        if not query:
+            raise ValidationError("Search query is required")
+        if not 1 <= limit <= 50:
+            raise ValidationError("Limit must be between 1 and 50")
+
+        # Check cache first
+        cache_key = f"search:{query}:{limit}"
+        cached_results = cache.get(cache_key)
+        if cached_results:
+             logger.debug(f"Cache hit for search: {query}")
+             return create_success_response(
+                 {
+                     "query": query,
+                     "results": cached_results, # Assuming cached_results matches SearchResult model
+                     "total": len(cached_results),
+                     "cache_info": get_cache_info(request, hit=True)
+                 },
+                 SearchResponse
+             )
+        logger.debug(f"Cache miss for search: {query}")
+
+        # Search articles using executor for sync call
+        results = await request.app.loop.run_in_executor(
+            None, wikipedia.search, query, limit=limit
+        )
+
+        # Format results to match the simplified SearchResult model (title only)
+        search_results_formatted = [{"title": title} for title in results]
+
+        # Cache the formatted results
+        cache.set(cache_key, search_results_formatted)
+
+        # Create response using the formatted results
+        return create_success_response(
+            {
+                "query": query,
+                "results": search_results_formatted, # Use the formatted list
+                "total": len(search_results_formatted),
+                "cache_info": get_cache_info(request, hit=False)
+            },
+            SearchResponse
+        )
+
+    except APIError as e:
+        request.app.state.api_stats["errors"] += 1
+        logger.warning(f"API Error searching articles '{query}': {e.code} - {e.message}")
+        raise e
+    except Exception as e:
+        request.app.state.api_stats["errors"] += 1
+        logger.error(f"Unexpected error searching articles '{query}': {str(e)}", exc_info=True)
+        raise WikipediaError(f"An unexpected error occurred during search: {str(e)}")
+    # finally block removed
+
+@router.get("/stats", response_model=StatsResponse)
+async def get_stats(
+    request: Request,
+    response: Response,
+    cache: CachingService = Depends(get_cache_service_instance)
+) -> StatsResponse: # Return type hint should match response_model if used
+    """
+    Get API statistics.
     
-    # For disambiguation pages, just return as is
-    if parsed_article.get("type") == "disambiguation":
-        return parsed_article
-    
-    # Extract sections from parsed data
-    sections = parsed_article.get("sections", [])
-    
-    # Create response
-    return {
-        "type": "sections",
-        "title": parsed_article.get("title", title),
-        "url": parsed_article.get("url", ""),
-        "count": len(sections),
-        "sections": sections
-    } 
+    Args:
+        request: FastAPI request
+        response: FastAPI response
+        cache: Cache service
+
+    Returns:
+        Statistics response
+    """
+    # Increment request counter
+    request.app.state.api_stats["requests"] += 1
+    try:
+        # Get cache stats
+        cache_stats = cache.get_stats()
+
+        # Get API stats directly from app state
+        api_stats = request.app.state.api_stats
+
+        # Create response (using the model directly for validation)
+        response_data = StatsResponse(
+             cache=cache_stats,
+             api=api_stats
+        )
+        # Return the Pydantic model instance, FastAPI handles serialization
+        return response_data
+
+    except APIError as e:
+        request.app.state.api_stats["errors"] += 1
+        logger.warning(f"API Error getting stats: {e.code} - {e.message}")
+        raise e
+    except Exception as e:
+        request.app.state.api_stats["errors"] += 1
+        logger.error(f"Unexpected error getting stats: {str(e)}", exc_info=True)
+        raise CacheError(f"An unexpected error occurred while getting stats: {str(e)}")
+    # finally block removed
+
+@router.exception_handler(APIError)
+async def api_error_handler(request: Request, error: APIError) -> JSONResponse:
+    """Handle API errors."""
+    return create_error_response(error)
