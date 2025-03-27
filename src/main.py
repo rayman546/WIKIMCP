@@ -1,194 +1,127 @@
-import os
-import sys
+"""
+Main application module.
+"""
 import logging
+import logging.config
+import time  # Import time
+from fastapi import FastAPI
 
-# Define debug log function for console output
-def debug_log(message):
-    """Log to stderr so it doesn't interfere with JSON-RPC communication"""
-    print(message, file=sys.stderr)
+from .api_routes import router
+from .config import settings, CacheType  # Import CacheType
+from .wikipedia_client import WikipediaClient
+from .caching_service import CachingService
+from .parser import WikipediaParser
+from .security import setup_security
+
+# Configure logging
+logging.config.dictConfig({
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {
+            "format": settings.LOG_FORMAT
+        }
+    },
+    "handlers": {
+        "default": {
+            "formatter": "default",
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stdout"
+        },
+        "file": {
+            "formatter": "default",
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": "wikipedia_mcp.log",
+            "maxBytes": 10485760,  # 10MB
+            "backupCount": 5
+        }
+    },
+    "loggers": {
+        "": {
+            "handlers": ["default", "file"],
+            "level": settings.LOG_LEVEL
+        }
+    }
+})
 
 # Setup logging
 logger = logging.getLogger(__name__)
 
-# Configure logging to use stderr
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    stream=sys.stderr  # Ensure logs go to stderr
+# Create FastAPI app
+app = FastAPI(
+    title="Wikipedia MCP API",
+    description="API for parsing and caching Wikipedia articles",
+    version="1.0.0",
+    docs_url="/docs" if settings.DEBUG else None,
+    redoc_url="/redoc" if settings.DEBUG else None
 )
 
-# Load environment variables
-PORT = int(os.getenv("PORT", "8000"))
-HOST = os.getenv("HOST", "0.0.0.0")
-RELOAD = os.getenv("RELOAD", "True").lower() == "true"
+# Setup security middleware (includes CORS)
+setup_security(app)
 
-try:
-    import uvicorn
-    from fastapi import FastAPI, HTTPException
-    from fastapi.middleware.cors import CORSMiddleware
+# Include API routes
+app.include_router(router, prefix="/api/v1")
 
-    # Import routes - Move these into try block to catch import errors
-    try:
-        from .api_routes import router as wiki_router, SummaryLevel
-    except ImportError as e:
-        debug_log(f"Error importing routes: {e}")
-        debug_log("Make sure all dependencies are installed: pip install -r requirements.txt")
-        sys.exit(1)
+# Health check endpoint
+@app.get("/ping")
+async def health_check():
+    """Health check endpoint."""
+    return {"status": "ok"}
 
-    # Create FastAPI app
-    app = FastAPI(
-        title="Wikipedia MCP API",
-        description="A Model Context Protocol (MCP) API for interacting with Wikipedia content",
-        version="0.2.0",  # Updated version for refactored API
-        docs_url="/",  # Swagger UI at root path
+# Startup event
+@app.on_event("startup")
+async def startup_event():
+    """Initialize application state and singletons on startup."""
+    logger.info("Starting Wikipedia MCP API")
+
+    # Create and store singleton instances in app.state
+    # Note: Renamed RATE_LIMIT to WIKIPEDIA_RATE_LIMIT in config (will update config next)
+    app.state.wikipedia_client = WikipediaClient(rate_limit_delay=settings.WIKIPEDIA_RATE_LIMIT)
+    app.state.cache_service = CachingService(
+        cache_type=settings.CACHE_TYPE,
+        ttl=settings.CACHE_TTL,
+        maxsize=settings.CACHE_MAXSIZE,
+        cache_dir=settings.CACHE_DIR
     )
+    app.state.parser = WikipediaParser()
 
-    # Configure CORS
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],  # For development; restrict in production
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    logger.info(f"Cache: {settings.CACHE_TYPE.value} (TTL: {settings.CACHE_TTL}s, Max Size: {settings.CACHE_MAXSIZE})")
+    logger.info(f"Wikipedia Rate Limit: {settings.WIKIPEDIA_RATE_LIMIT}s between requests")
+    # Note: Added API_RATE_LIMIT and API_RATE_LIMIT_WINDOW to config (will update config next)
+    logger.info(f"API Rate Limit: {settings.API_RATE_LIMIT} requests per {settings.API_RATE_LIMIT_WINDOW}s")
 
-    # Include API routes
-    app.include_router(wiki_router, prefix="/api")
+    # Initialize API stats
+    app.state.api_stats = {
+        "requests": 0,
+        "errors": 0,
+        "start_time": time.time() # Use time.time()
+    }
+    logger.info("Application startup complete.")
 
-    @app.get("/ping", tags=["Health"])
-    async def health_check():
-        """Simple health check endpoint."""
-        return {"status": "ok", "message": "Wikipedia MCP API is running"}
-
-    # Define Model Context Protocol (MCP) endpoint
-    @app.get("/mcp", tags=["MCP"])
-    async def mcp_definitions():
-        """
-        Return the Model Context Protocol (MCP) definitions for LLM tool use.
-        This endpoint provides the schema that enables LLMs to use this API as a tool.
-        """
-        return {
-            "schema_version": "v1",
-            "tools": [
-                {
-                    "name": "wikipedia_search",
-                    "description": "Search for Wikipedia articles matching a term",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "term": {
-                                "type": "string",
-                                "description": "The search term to look for on Wikipedia"
-                            },
-                            "results": {
-                                "type": "integer",
-                                "description": "Number of results to return (1-50)",
-                                "default": 10,
-                                "minimum": 1,
-                                "maximum": 50
-                            }
-                        },
-                        "required": ["term"]
-                    },
-                    "endpoint": "/api/search"
-                },
-                {
-                    "name": "wikipedia_article",
-                    "description": "Get a complete Wikipedia article by title with all parsed components",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "title": {
-                                "type": "string",
-                                "description": "The title of the Wikipedia article to retrieve"
-                            },
-                            "auto_suggest": {
-                                "type": "boolean",
-                                "description": "Whether to auto-suggest similar titles",
-                                "default": True
-                            }
-                        },
-                        "required": ["title"]
-                    },
-                    "endpoint": "/api/article"
-                },
-                {
-                    "name": "wikipedia_summary",
-                    "description": "Get a summary of a Wikipedia article at a specific detail level",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "title": {
-                                "type": "string",
-                                "description": "The title of the Wikipedia article to summarize"
-                            },
-                            "level": {
-                                "type": "string",
-                                "description": "Summary detail level (short, medium, long)",
-                                "enum": [e.value for e in SummaryLevel],
-                                "default": SummaryLevel.MEDIUM.value
-                            }
-                        },
-                        "required": ["title"]
-                    },
-                    "endpoint": "/api/summary"
-                },
-                {
-                    "name": "wikipedia_citations",
-                    "description": "Get citations and references from a Wikipedia article",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "title": {
-                                "type": "string",
-                                "description": "The title of the Wikipedia article to get citations from"
-                            }
-                        },
-                        "required": ["title"]
-                    },
-                    "endpoint": "/api/citations"
-                },
-                {
-                    "name": "wikipedia_structured",
-                    "description": "Get structured data (tables, infobox) from a Wikipedia article",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "title": {
-                                "type": "string",
-                                "description": "The title of the Wikipedia article to get structured data from"
-                            }
-                        },
-                        "required": ["title"]
-                    },
-                    "endpoint": "/api/structured"
-                },
-                {
-                    "name": "wikipedia_sections",
-                    "description": "Get the section structure and content from a Wikipedia article",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "title": {
-                                "type": "string",
-                                "description": "The title of the Wikipedia article to get sections from"
-                            }
-                        },
-                        "required": ["title"]
-                    },
-                    "endpoint": "/api/sections"
-                }
-            ]
-        }
-
-except ImportError as e:
-    debug_log(f"Error importing dependencies: {e}")
-    debug_log("Make sure all dependencies are installed: pip install -r requirements.txt")
-    sys.exit(1)
-except Exception as e:
-    debug_log(f"Unexpected error: {e}")
-    sys.exit(1)
+# Shutdown event
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup application state on shutdown."""
+    logger.info("Shutting down Wikipedia MCP API")
+    # Access cache_service from app.state
+    cache_service: CachingService = getattr(app.state, 'cache_service', None)
+    if cache_service:
+        if settings.CACHE_TYPE == CacheType.PERSIST:
+            # Ideally, make _save_cache async or run in executor
+            logger.info("Saving persistent cache...")
+            cache_service._save_cache() # Use internal method for now
+            logger.info("Persistent cache saved.")
+        elif settings.CACHE_TYPE == CacheType.DISK:
+            logger.info("Closing disk cache...")
+            cache_service.cache.close() # Ensure disk cache is closed
+            logger.info("Disk cache closed.")
+    logger.info("Application shutdown complete.")
 
 if __name__ == "__main__":
-    debug_log(f"Starting Wikipedia MCP API on {HOST}:{PORT}")
-    uvicorn.run("src.main:app", host=HOST, port=PORT, reload=RELOAD) 
+    import uvicorn
+    uvicorn.run(
+        "main:app",
+        host=settings.HOST,
+        port=settings.PORT,
+        reload=settings.RELOAD
+    )

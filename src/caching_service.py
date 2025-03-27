@@ -1,232 +1,247 @@
+"""
+Caching service for the Wikipedia MCP API.
+"""
+import asyncio # Import asyncio
 import os
 import json
-import time
 import logging
-from typing import Dict, Any, Optional, Callable
+import functools
+from typing import Any, Optional, Callable
+import aiofiles # Import aiofiles
 from cachetools import TTLCache, LRUCache
+from diskcache import Cache as DiskCacheCache # Rename to avoid conflict
+from .config import settings, CacheType
 
 # Setup logging
 logger = logging.getLogger(__name__)
 
 class CachingService:
-    """Service for caching Wikipedia API responses."""
+    """Service for caching API responses."""
     
     def __init__(
-        self, 
-        cache_type: str = "ttl", 
-        maxsize: int = 1000, 
-        ttl: int = 3600,
-        cache_dir: Optional[str] = None
+        self,
+        cache_type: CacheType = settings.CACHE_TYPE,
+        ttl: int = settings.CACHE_TTL,
+        maxsize: int = settings.CACHE_MAXSIZE,
+        cache_dir: Optional[str] = settings.CACHE_DIR
     ):
         """
         Initialize the caching service.
         
         Args:
-            cache_type: Type of cache to use ('ttl', 'lru', or 'persist')
+            cache_type: Type of cache to use (ttl, lru, persist, disk)
+            ttl: Time-to-live for cache entries in seconds
             maxsize: Maximum number of items in the cache
-            ttl: Time-to-live for cache entries in seconds (for TTL cache)
-            cache_dir: Directory for persistent cache (if cache_type is 'persist')
+            cache_dir: Directory for persistent cache
         """
         self.cache_type = cache_type
-        self.maxsize = maxsize
         self.ttl = ttl
-        self.cache_dir = cache_dir
-        
-        # Initialize in-memory cache
-        if self.cache_type == "ttl":
-            self.cache = TTLCache(maxsize=maxsize, ttl=ttl)
-            logger.info(f"Initialized TTL cache with maxsize={maxsize}, ttl={ttl}")
-        elif self.cache_type == "lru":
-            self.cache = LRUCache(maxsize=maxsize)
-            logger.info(f"Initialized LRU cache with maxsize={maxsize}")
-        elif self.cache_type == "persist":
-            self.cache = {}
-            self._load_persistent_cache()
-            logger.info(f"Initialized persistent cache with maxsize={maxsize}, ttl={ttl}, dir={self.cache_dir}")
-        else:
-            logger.error(f"Unsupported cache type: {cache_type}")
-            raise ValueError(f"Unsupported cache type: {cache_type}")
-    
-    def get(self, key: str) -> Optional[Any]:
-        """
-        Get an item from the cache.
-        
-        Args:
-            key: Cache key
-            
-        Returns:
-            Cached value or None if not found
-        """
-        try:
-            if self.cache_type in ["ttl", "lru"]:
-                value = self.cache.get(key)
-                if value is not None:
-                    logger.debug(f"Cache hit for key: {key}")
-                else:
-                    logger.debug(f"Cache miss for key: {key}")
-                return value
-            elif self.cache_type == "persist":
-                # Check if item exists and is not expired
-                if key in self.cache:
-                    item = self.cache[key]
-                    if "expiry" not in item or item["expiry"] > time.time():
-                        logger.debug(f"Cache hit for key: {key}")
-                        return item["value"]
-                    else:
-                        # Item is expired, remove it
-                        logger.debug(f"Cache item expired for key: {key}")
-                        del self.cache[key]
-                        self._save_persistent_cache()
-                else:
-                    logger.debug(f"Cache miss for key: {key}")
-                return None
-        except Exception as e:
-            logger.error(f"Cache get error for key {key}: {str(e)}")
-            return None
-    
-    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
-        """
-        Set an item in the cache.
-        
-        Args:
-            key: Cache key
-            value: Value to cache
-            ttl: Optional custom TTL (overrides default)
-        """
-        try:
-            if self.cache_type in ["ttl", "lru"]:
-                self.cache[key] = value
-                logger.debug(f"Cached value for key: {key}")
-            elif self.cache_type == "persist":
-                expiry = time.time() + (ttl if ttl is not None else self.ttl)
-                self.cache[key] = {"value": value, "expiry": expiry}
-                logger.debug(f"Cached value for key: {key} with expiry: {expiry}")
-                self._save_persistent_cache()
-        except Exception as e:
-            logger.error(f"Cache set error for key {key}: {str(e)}")
-    
-    def invalidate(self, key: str) -> None:
-        """
-        Remove an item from the cache.
-        
-        Args:
-            key: Cache key to invalidate
-        """
-        try:
-            if key in self.cache:
-                del self.cache[key]
-                logger.debug(f"Invalidated cache for key: {key}")
-                if self.cache_type == "persist":
-                    self._save_persistent_cache()
-        except Exception as e:
-            logger.error(f"Cache invalidation error for key {key}: {str(e)}")
-    
-    def clear(self) -> None:
-        """Clear the entire cache."""
-        try:
-            if self.cache_type in ["ttl", "lru"]:
-                self.cache.clear()
-            elif self.cache_type == "persist":
-                self.cache = {}
-                self._save_persistent_cache()
-            logger.info("Cache cleared")
-        except Exception as e:
-            logger.error(f"Cache clear error: {str(e)}")
-    
-    def _get_cache_file_path(self) -> str:
-        """Get the path to the persistent cache file."""
-        if not self.cache_dir:
-            self.cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
-        
-        os.makedirs(self.cache_dir, exist_ok=True)
-        logger.debug(f"Using cache directory: {self.cache_dir}")
-        return os.path.join(self.cache_dir, "wikipedia_cache.json")
-    
-    def _load_persistent_cache(self) -> None:
-        """Load cache from disk for persistent cache."""
-        if self.cache_type != "persist":
-            return
-            
-        try:
-            cache_file = self._get_cache_file_path()
-            if os.path.exists(cache_file):
-                with open(cache_file, "r", encoding="utf-8") as f:
-                    self.cache = json.load(f)
-                
-                logger.info(f"Loaded {len(self.cache)} items from persistent cache")
-                
-                # Clean expired entries on load
-                current_time = time.time()
-                expired_keys = [
-                    key for key, item in self.cache.items() 
-                    if "expiry" in item and item["expiry"] <= current_time
-                ]
-                
-                for key in expired_keys:
-                    del self.cache[key]
-                
-                if expired_keys:
-                    logger.info(f"Removed {len(expired_keys)} expired items from persistent cache")
-                    self._save_persistent_cache()
-            else:
-                logger.info("No persistent cache file found, starting with empty cache")
-        except Exception as e:
-            logger.error(f"Error loading persistent cache: {str(e)}")
-            self.cache = {}
-    
-    def _save_persistent_cache(self) -> None:
-        """Save cache to disk for persistent cache."""
-        if self.cache_type != "persist":
-            return
-            
-        try:
-            cache_file = self._get_cache_file_path()
-            with open(cache_file, "w", encoding="utf-8") as f:
-                json.dump(self.cache, f)
-            logger.debug(f"Saved {len(self.cache)} items to persistent cache")
-        except Exception as e:
-            logger.error(f"Error saving persistent cache: {str(e)}")
+        self.maxsize = maxsize
+        self.cache_dir = cache_dir or os.path.join(os.getcwd(), ".cache")
+        self.cache = None # Initialize cache attribute
 
-# Decorator for caching function results
-def cached(
-    cache_service: CachingService,
-    key_prefix: str = "",
-    key_func: Optional[Callable] = None,
-    ttl: Optional[int] = None
-):
+        # Create cache based on type
+        if cache_type == CacheType.TTL:
+            self.cache = TTLCache(maxsize=maxsize, ttl=ttl)
+        elif cache_type == CacheType.LRU:
+            self.cache = LRUCache(maxsize=maxsize)
+        elif cache_type == CacheType.DISK:
+            # Use diskcache for disk-based caching
+            os.makedirs(self.cache_dir, exist_ok=True)
+            # Correct size_limit interpretation (it's in bytes)
+            self.cache = DiskCacheCache(
+                directory=self.cache_dir,
+                size_limit=maxsize * 1024 * 1024, # Assuming maxsize is in MB
+                eviction_policy="least-recently-used",
+                statistics=True
+            )
+        elif cache_type == CacheType.PERSIST:
+            # Legacy JSON-based persistent cache (in-memory dict)
+            self.cache = {}
+            self.cache_file = os.path.join(self.cache_dir, "cache.json")
+            # Loading is now done asynchronously via initialize method
+        else:
+            raise ValueError(f"Invalid cache type: {cache_type}")
+
+        logger.info(f"Initialized {cache_type.value} cache config (TTL={ttl}s, maxsize={maxsize})")
+
+    async def initialize(self):
+        """Asynchronously initialize the cache, e.g., load from disk."""
+        if self.cache_type == CacheType.PERSIST:
+            await self._load_cache()
+        logger.info(f"Cache Service initialized ({self.cache_type.value}).")
+
+
+    async def get(self, key: str) -> Any:
+        """Get a value from the cache (async)."""
+        loop = asyncio.get_running_loop()
+        try:
+            if self.cache_type == CacheType.DISK:
+                # Run blocking diskcache get in executor
+                return await loop.run_in_executor(None, self.cache.get, key)
+            elif self.cache_type == CacheType.PERSIST:
+                 # In-memory dict access is fast, no executor needed
+                return self.cache.get(key)
+            else: # TTL, LRU (cachetools) are also in-memory
+                # cachetools get might expire item, potentially blocking? Check docs.
+                # Assuming quick enough for now.
+                return self.cache.get(key)
+        except Exception as e:
+            logger.error(f"Error getting from cache (key: {key}): {str(e)}", exc_info=True)
+            return None
+
+    async def set(self, key: str, value: Any) -> None:
+        """Set a value in the cache (async)."""
+        loop = asyncio.get_running_loop()
+        try:
+            if self.cache_type == CacheType.DISK:
+                # Run blocking diskcache set in executor
+                await loop.run_in_executor(None, self.cache.set, key, value)
+            elif self.cache_type == CacheType.PERSIST:
+                # In-memory dict access is fast
+                self.cache[key] = value
+                # REMOVED sync save: self._save_cache()
+            else: # TTL, LRU
+                # Assuming cachetools set is quick enough
+                self.cache[key] = value
+        except Exception as e:
+            logger.error(f"Error setting cache value (key: {key}): {str(e)}", exc_info=True)
+
+    async def delete(self, key: str) -> None:
+        """Delete a value from the cache (async)."""
+        loop = asyncio.get_running_loop()
+        try:
+            if self.cache_type == CacheType.DISK:
+                # Run blocking diskcache delete in executor
+                await loop.run_in_executor(None, self.cache.delete, key)
+            elif self.cache_type == CacheType.PERSIST:
+                if key in self.cache:
+                    del self.cache[key]
+                    # REMOVED sync save: self._save_cache()
+            else: # TTL, LRU
+                if key in self.cache:
+                    # Assuming cachetools del is quick enough
+                    del self.cache[key]
+        except Exception as e:
+            logger.error(f"Error deleting from cache (key: {key}): {str(e)}", exc_info=True)
+
+    async def clear(self) -> None:
+        """Clear all values from the cache (async)."""
+        loop = asyncio.get_running_loop()
+        try:
+            if self.cache_type == CacheType.DISK:
+                # Run blocking diskcache clear in executor
+                await loop.run_in_executor(None, self.cache.clear)
+            elif self.cache_type == CacheType.PERSIST:
+                self.cache.clear()
+                # REMOVED sync save: self._save_cache()
+            else: # TTL, LRU
+                self.cache.clear()
+        except Exception as e:
+            logger.error(f"Error clearing cache: {str(e)}", exc_info=True)
+
+    async def get_stats(self) -> dict:
+        """Get cache statistics (async)."""
+        loop = asyncio.get_running_loop()
+        try:
+            if self.cache_type == CacheType.DISK:
+                # Run blocking diskcache stats in executor
+                hits, misses = await loop.run_in_executor(None, self.cache.stats)
+                # Run blocking diskcache size in executor
+                size = await loop.run_in_executor(None, getattr, self.cache, 'size')
+                return {
+                    "hits": hits,
+                    "misses": misses,
+                    "size": size, # Size in bytes
+                    "max_size": self.maxsize * 1024 * 1024, # Assuming maxsize is MB
+                    "type": self.cache_type.value
+                }
+            else: # TTL, LRU, PERSIST (in-memory)
+                # Assuming len() is quick enough
+                return {
+                    "size": len(self.cache),
+                    "max_size": self.maxsize, # Max items for cachetools/persist
+                    "type": self.cache_type.value,
+                    # Add hits/misses if cachetools provides them easily
+                    "hits": getattr(self.cache, 'hits', None),
+                    "misses": getattr(self.cache, 'misses', None),
+                }
+        except Exception as e:
+            logger.error(f"Error getting cache stats: {str(e)}", exc_info=True)
+            return {}
+
+    async def _load_cache(self) -> None:
+        """Load cache from disk for persistent cache (async)."""
+        if self.cache_type != CacheType.PERSIST or not self.cache_file:
+            return
+
+        try:
+            # Ensure directory exists (sync is ok here, happens once)
+            os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
+            if os.path.exists(self.cache_file):
+                logger.info(f"Loading persistent cache from {self.cache_file}")
+                async with aiofiles.open(self.cache_file, "r", encoding="utf-8") as f:
+                    content = await f.read()
+                    # Run potentially blocking json.loads in executor
+                    loop = asyncio.get_running_loop()
+                    self.cache = await loop.run_in_executor(None, json.loads, content)
+                    logger.info(f"Loaded {len(self.cache)} items from persistent cache.")
+            else:
+                 logger.info(f"Persistent cache file not found: {self.cache_file}")
+                 self.cache = {}
+        except Exception as e:
+            logger.error(f"Error loading cache from disk ({self.cache_file}): {str(e)}", exc_info=True)
+            self.cache = {} # Reset cache on error
+
+    async def _save_cache(self) -> None:
+        """Save cache to disk for persistent cache (async)."""
+        if self.cache_type != CacheType.PERSIST or not self.cache_file:
+            return
+
+        logger.info(f"Saving persistent cache to {self.cache_file} ({len(self.cache)} items)")
+        try:
+            # Ensure directory exists (sync is ok here)
+            os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
+             # Run potentially blocking json.dumps in executor
+            loop = asyncio.get_running_loop()
+            content = await loop.run_in_executor(None, json.dumps, self.cache, indent=2)
+            async with aiofiles.open(self.cache_file, "w", encoding="utf-8") as f:
+                await f.write(content)
+            logger.info("Persistent cache saved successfully.")
+        except Exception as e:
+            logger.error(f"Error saving cache to disk ({self.cache_file}): {str(e)}", exc_info=True)
+
+    # Removed __del__ method - cleanup handled in main.py shutdown
+
+# Decorator needs to be async now
+def cached(cache_service: CachingService, key_prefix: str = "") -> Callable:
     """
-    Decorator for caching function results.
-    
+    Decorator for caching async function results.
+
     Args:
         cache_service: CachingService instance
         key_prefix: Prefix for cache keys
-        key_func: Function to generate cache key from arguments
-        ttl: Custom TTL for cache entries
-        
+
     Returns:
-        Decorated function
+        Decorated async function
     """
-    def decorator(func):
-        def wrapper(*args, **kwargs):
-            # Generate cache key
-            if key_func:
-                cache_key = key_func(*args, **kwargs)
-            else:
-                # Default key generation
-                arg_str = ",".join(str(arg) for arg in args)
-                kwarg_str = ",".join(f"{k}={v}" for k, v in sorted(kwargs.items()))
-                cache_key = f"{key_prefix}:{func.__name__}:{arg_str}:{kwarg_str}"
-            
-            # Try to get from cache
-            cached_result = cache_service.get(cache_key)
+    def decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs) -> Any: # Make wrapper async
+            # TODO: Improve cache key generation (Phase 2)
+            cache_key = f"{key_prefix}:{func.__name__}:{str(args)}:{str(kwargs)}"
+
+            # Try to get from cache (await the async get)
+            cached_result = await cache_service.get(cache_key)
             if cached_result is not None:
+                logger.debug(f"Cache hit for {cache_key}")
                 return cached_result
-            
-            # Call function and cache result
-            result = func(*args, **kwargs)
-            cache_service.set(cache_key, result, ttl)
+
+            # Call async function and cache result
+            logger.debug(f"Cache miss for {cache_key}")
+            result = await func(*args, **kwargs) # Await the original async function
+            await cache_service.set(cache_key, result) # Await the async set
+
             return result
-        
         return wrapper
-    
-    return decorator 
+    return decorator

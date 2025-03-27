@@ -1,18 +1,14 @@
-import time
-import sys
+Can you use braimport asyncio # Import asyncio
 import logging
-from typing import Dict, List, Optional, Union, Any
-
-# Debug log function for console output
-def debug_log(message):
-    """Log to stderr so it doesn't interfere with JSON-RPC communication"""
-    print(message, file=sys.stderr)
+import time
+from typing import Dict, List, Any
+from bs4 import BeautifulSoup
 
 # Setup logging
 logger = logging.getLogger(__name__)
 
 class ArticleNotFoundError(Exception):
-    """Custom exception for article not found errors."""
+    """Raised when an article is not found."""
     pass
 
 class WikipediaClient:
@@ -36,28 +32,28 @@ class WikipediaClient:
                 from bs4 import BeautifulSoup
                 self.BeautifulSoup = BeautifulSoup
             except ImportError:
-                debug_log("Error: No module named 'bs4' (BeautifulSoup)")
-                debug_log("Make sure you have installed all dependencies: pip install -r requirements.txt")
+                logger.error("Missing dependency: bs4 (BeautifulSoup)")
                 raise ImportError("Missing dependency: bs4 (BeautifulSoup)")
         except ImportError:
-            debug_log("Error: No module named 'wikipedia'")
-            debug_log("Make sure you have installed all dependencies: pip install -r requirements.txt")
+            logger.error("Missing dependency: wikipedia")
             raise ImportError("Missing dependency: wikipedia")
-        
-    def _respect_rate_limit(self):
-        """Ensure rate limiting by adding delay if needed."""
+
+    async def _respect_rate_limit(self):
+        """Ensure rate limiting by adding delay if needed (async version)."""
         current_time = time.time()
         time_since_last_request = current_time - self.last_request_time
-        
+
         if time_since_last_request < self.rate_limit_delay:
-            time.sleep(self.rate_limit_delay - time_since_last_request)
-        
-        self.last_request_time = time.time()
-    
-    def search(self, query: str, results: int = 10) -> List[str]:
+            sleep_duration = self.rate_limit_delay - time_since_last_request
+            logger.debug(f"Rate limiting: sleeping for {sleep_duration:.2f} seconds")
+            await asyncio.sleep(sleep_duration) # Use asyncio.sleep
+
+        self.last_request_time = time.time() # Update last request time after potential sleep
+
+    async def search(self, query: str, results: int = 10) -> List[str]:
         """
-        Search for Wikipedia articles.
-        
+        Search for Wikipedia articles (async version).
+
         Args:
             query: Search term
             results: Maximum number of results to return
@@ -65,60 +61,75 @@ class WikipediaClient:
         Returns:
             List of article titles
         """
-        self._respect_rate_limit()
+        await self._respect_rate_limit()
+        loop = asyncio.get_running_loop()
         try:
-            return self.wikipedia.search(query, results=results)
+            # Run blocking call in executor
+            search_results = await loop.run_in_executor(
+                None, self.wikipedia.search, query, results
+            )
+            return search_results
         except Exception as e:
-            logger.error(f"Wikipedia search error: {str(e)}")
-            debug_log(f"Wikipedia search error: {str(e)}")
-            raise Exception(f"Wikipedia search error: {str(e)}")
-    
-    def get_article(self, title: str, auto_suggest: bool = True) -> Dict[str, Any]:
+            logger.error(f"Wikipedia search error for '{query}': {str(e)}", exc_info=True)
+            # Raise a more specific error later (e.g., WikipediaError)
+            raise WikipediaError(f"Wikipedia search failed: {str(e)}")
+
+    async def get_article(self, title: str, auto_suggest: bool = True) -> Dict[str, Any]:
         """
-        Get a Wikipedia article by title.
-        
+        Get a Wikipedia article by title (async version).
+
         Args:
             title: Article title
             auto_suggest: Whether to auto-suggest similar titles
             
         Returns:
-            Dictionary containing essential article data (title, url, html, summary)
+            Dictionary containing essential article data (title, url, html, summary, etc.)
         """
-        self._respect_rate_limit()
+        await self._respect_rate_limit()
+        loop = asyncio.get_running_loop()
         try:
-            page = self.wikipedia.page(title, auto_suggest=auto_suggest)
+            # Run blocking wikipedia.page call in executor
+            page = await loop.run_in_executor(
+                None, self.wikipedia.page, title, auto_suggest
+            )
+
+            # Run blocking page.html() call in executor
+            html_content = await loop.run_in_executor(None, page.html)
+
+            # Other attributes like summary, content, images, links, categories are usually cached
+            # by the library after the initial page load, so accessing them might not block significantly.
+            # However, if they trigger further network calls, they should also be run in executor.
+            # For now, assume they are relatively quick.
             return {
                 "title": page.title,
                 "url": page.url,
-                "html": page.html(),
+                "html": html_content,
                 "summary": page.summary,
-                "content": page.content,  # Keep raw content for full-text processing if needed
-                "images": page.images,    # Keep basic metadata for convenience
-                "links": page.links,      # Keep basic metadata for convenience
-                "categories": page.categories  # Keep basic metadata for convenience
+                "content": page.content,
+                "images": page.images,
+                "links": page.links,
+                "categories": page.categories
             }
         except self.wikipedia.exceptions.DisambiguationError as e:
-            # Handle disambiguation pages
+            # TODO: Refactor to raise DisambiguationAPIError (Phase 2)
             logger.info(f"Disambiguation page found for '{title}': {str(e)}")
-            debug_log(f"Disambiguation page found for '{title}': {str(e)}")
+            # Returning dict for now, will change to raise error later
             return {
                 "error": "disambiguation",
                 "message": str(e),
                 "options": e.options
             }
         except self.wikipedia.exceptions.PageError as e:
-            logger.error(f"Page not found: {title} - {str(e)}")
-            debug_log(f"Page not found: {title} - {str(e)}")
-            raise ArticleNotFoundError(f"Page not found: {title}")
+            logger.warning(f"Page not found for article: {title} - {str(e)}")
+            raise NotFoundError(f"Page not found: {title}") # Use specific APIError
         except Exception as e:
-            logger.error(f"Error retrieving article '{title}': {str(e)}")
-            debug_log(f"Error retrieving article '{title}': {str(e)}")
-            raise Exception(f"Error retrieving article: {str(e)}")
-    
-    def get_summary(self, title: str, sentences: int = 5) -> str:
+            logger.error(f"Error retrieving article '{title}': {str(e)}", exc_info=True)
+            raise WikipediaError(f"Error retrieving article: {str(e)}")
+
+    async def get_summary(self, title: str, sentences: int = 5) -> str:
         """
-        Get a summary of a Wikipedia article.
-        
+        Get a summary of a Wikipedia article (async version).
+
         Args:
             title: Article title
             sentences: Number of sentences to include in summary
@@ -126,64 +137,27 @@ class WikipediaClient:
         Returns:
             Summary text
         """
-        self._respect_rate_limit()
+        await self._respect_rate_limit()
+        loop = asyncio.get_running_loop()
         try:
-            return self.wikipedia.summary(title, sentences=sentences)
+            # Run blocking call in executor
+            summary_text = await loop.run_in_executor(
+                None, self.wikipedia.summary, title, sentences
+            )
+            return summary_text
         except self.wikipedia.exceptions.DisambiguationError as e:
-            # Handle disambiguation pages
+            # TODO: Refactor to raise DisambiguationAPIError (Phase 2)
             options_str = ", ".join(e.options[:10])
             if len(e.options) > 10:
                 options_str += f", and {len(e.options) - 10} more"
-            debug_log(f"Disambiguation page found for '{title}': {str(e)}")
+            logger.info(f"Disambiguation page found for summary '{title}': {str(e)}")
+            # Returning string for now, will change to raise error later
             return f"Disambiguation: '{title}' may refer to multiple articles: {options_str}"
         except self.wikipedia.exceptions.PageError as e:
-            logger.error(f"Page not found for summary: {title} - {str(e)}")
-            debug_log(f"Page not found for summary: {title} - {str(e)}")
-            raise ArticleNotFoundError(f"Page not found: {title}")
+            logger.warning(f"Page not found for summary: {title} - {str(e)}")
+            raise NotFoundError(f"Page not found: {title}") # Use specific APIError
         except Exception as e:
-            logger.error(f"Error retrieving summary for '{title}': {str(e)}")
-            debug_log(f"Error retrieving summary for '{title}': {str(e)}")
-            raise Exception(f"Error retrieving summary: {str(e)}")
-    
-    def _extract_sections(self, page) -> List[Dict[str, Any]]:
-        """
-        Extract sections from a Wikipedia page.
-        
-        Args:
-            page: Wikipedia page object
-            
-        Returns:
-            List of section dictionaries
-        """
-        sections = []
-        
-        # Parse HTML to extract sections
-        soup = self.BeautifulSoup(page.html(), 'html.parser')
-        
-        # Find all headings (h1-h6)
-        headings = soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
-        
-        for i, heading in enumerate(headings):
-            section = {
-                "level": int(heading.name[1]),  # h1 -> 1, h2 -> 2, etc.
-                "title": heading.get_text().strip(),
-                "content": ""
-            }
-            
-            # Get content until next heading
-            content_elements = []
-            next_sibling = heading.next_sibling
-            
-            while next_sibling and next_sibling.name not in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
-                if next_sibling.name in ['p', 'ul', 'ol', 'table']:
-                    content_elements.append(str(next_sibling))
-                next_sibling = next_sibling.next_sibling
-                
-                # Safety check for complex pages
-                if len(content_elements) > 100:
-                    break
-            
-            section["content"] = "".join(content_elements)
-            sections.append(section)
-        
-        return sections 
+            logger.error(f"Error retrieving summary for '{title}': {str(e)}", exc_info=True)
+            raise WikipediaError(f"Error retrieving summary: {str(e)}")
+
+    # Removed redundant _extract_sections method. Parsing is handled by WikipediaParser.

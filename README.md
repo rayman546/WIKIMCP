@@ -1,287 +1,122 @@
 # Wikipedia MCP API
 
-A local Python server implementing the Model Context Protocol (MCP) to enable Language Learning Models (LLMs) like Claude Desktop and Cursor IDE to access and process English Wikipedia content efficiently.
+A Model Context Protocol (MCP) API for interacting with Wikipedia content in Claude Desktop and other MCP-compatible clients.
 
-## Overview
+## Features
 
-This project provides a RESTful API that serves as a bridge between LLMs and Wikipedia content. It allows LLMs to:
-
-- Search for Wikipedia articles
-- Retrieve full article content
-- Get article summaries at different detail levels
-- Extract citations
-- Access structured data (tables, infoboxes)
-- Extract article sections with content
-
-The API implements unified parsing and multi-level caching to optimize performance and reduce load on the Wikipedia API.
-
-## Architecture
-
-The Wikipedia MCP API is built with the following components:
-
-- **FastAPI**: A modern, high-performance web framework for building APIs
-- **Wikipedia Python Library**: For interacting with the Wikipedia API
-- **BeautifulSoup4**: For HTML parsing and content extraction
-- **Caching System**: Multiple caching strategies (TTL, LRU, persistent)
-
-### Key Features
-
-- **Unified Parsing**: All Wikipedia content is parsed once and cached as a complete structured object
-- **Optimized Caching**: Intelligent caching system to minimize redundant processing
-- **Robust Error Handling**: Comprehensive error handling with appropriate HTTP status codes
-- **Logging**: Structured logging throughout the application
-- **MCP Integration**: Full support for the Model Context Protocol
+- Search Wikipedia articles
+- Get complete article content with parsed components
+- Get article summaries at different detail levels (short, medium, long)
+- Extract citations and references
+- Get structured data (tables, infoboxes)
+- Extract article sections with hierarchical structure
+- Caching for improved performance
+- Proper rate limiting to respect the Wikipedia API
 
 ## Installation
 
-### Prerequisites
+### Automatic Installation (Windows)
 
-- Python 3.8+
-- pip (Python package manager)
+The easiest way to install the Wikipedia MCP API is to use the PowerShell installer script:
 
-### Setup
+```powershell
+# Download and run the installer script
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/YOUR_USERNAME/WIKIMCP/mcp-implementation/install.ps1" -OutFile "install.ps1"
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
 
-#### Automatic Installation (Windows)
+The installer will:
+1. Clone the repository or update an existing one
+2. Create a Python virtual environment
+3. Install all dependencies
+4. Configure Claude Desktop to use the Wikipedia MCP API
 
-For Windows users, we provide a PowerShell script that automates the installation process:
+For more detailed installation options, see the [installation checklist](./INSTALL_CHECKLIST.md).
 
-1. Download the `install.ps1` script from the repository
-2. Open PowerShell as Administrator
-3. Navigate to the directory containing the script
-4. Run the script:
-   ```
-   .\install.ps1
-   ```
-5. Follow the on-screen prompts
-6. Restart Claude Desktop after installation
+### Configure Claude Desktop
 
-The script will:
-- Clone the repository (or use an existing one)
-- Set up the Python virtual environment
-- Install all dependencies
-- Configure Claude Desktop
-- Optionally start the server
+You can configure Claude Desktop to use the Wikipedia MCP API by running the provided configuration script:
 
-For more detailed installation instructions and options, see the [INSTALL_CHECKLIST.md](INSTALL_CHECKLIST.md) file.
+```powershell
+# Update Claude Desktop configuration
+powershell -ExecutionPolicy Bypass -File .\update_config.ps1
+```
 
-#### Manual Installation
+This script will:
+1. Locate the Claude Desktop configuration file
+2. Add or update the Wikipedia MCP server configuration
+3. Point to the correct Python executable and script
+4. Set appropriate host and port settings
+
+### Manual Installation
 
 1. Clone the repository:
-   ```
-   git clone https://github.com/yourusername/wikipedia-mcp-api.git
-   cd wikipedia-mcp-api
-   ```
 
-2. Create a virtual environment:
-   ```
-   python -m venv venv
-   ```
-
-3. Activate the virtual environment:
-   - Windows:
-     ```
-     .\venv\Scripts\activate
-     ```
-   - macOS/Linux:
-     ```
-     source venv/bin/activate
-     ```
-
-4. Install dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
-
-## Usage
-
-### Starting the Server
-
-Using the run script:
-```
-python run.py
+```bash
+git clone https://github.com/YOUR_USERNAME/WIKIMCP.git
+cd WIKIMCP
+git checkout mcp-implementation
 ```
 
-Or directly:
-```
-python -m src.main
-```
+2. Create a virtual environment and install dependencies:
 
-This will start the server at `http://localhost:8000` with auto-reload enabled for development.
-
-### API Documentation
-
-Once the server is running, you can access the interactive API documentation at:
-
-- Swagger UI: `http://localhost:8000/`
-- ReDoc: `http://localhost:8000/redoc`
-
-### MCP Schema
-
-To get the Model Context Protocol schema for tool use by LLMs:
-
-```
-GET http://localhost:8000/mcp
+```bash
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-## API Endpoints
+3. Run the server:
 
-### Health Check
-
-```
-GET /ping
+```bash
+python run.py --host 127.0.0.1 --port 8765
 ```
 
-Returns a simple response to verify the server is running.
+4. Configure Claude Desktop:
+   - Edit your Claude Desktop configuration file at `%APPDATA%\Claude\claude_desktop_config.json`
+   - Add the Wikipedia MCP server configuration to the `mcpServers` section
 
-### Search
+## Usage in Claude Desktop
 
-```
-GET /api/search?term={search_term}&results={num_results}
-```
+Once installed and configured, you'll have the following tools available in Claude Desktop:
 
-Searches for Wikipedia articles matching the term.
+- `wikipedia_search`: Search for Wikipedia articles matching a term
+- `wikipedia_article`: Get a complete Wikipedia article by title
+- `wikipedia_summary`: Get a summary of a Wikipedia article
+- `wikipedia_citations`: Get citations from a Wikipedia article
+- `wikipedia_structured`: Get structured data (tables, infobox) from a Wikipedia article
+- `wikipedia_sections`: Get section structure and content from a Wikipedia article
 
-### Get Article
-
-```
-GET /api/article?title={article_title}&auto_suggest={true|false}
-```
-
-Gets the full content of a Wikipedia article, formatted for LLM consumption.
-
-### Get Summary
+Example usage in Claude:
 
 ```
-GET /api/summary?title={article_title}&level={short|medium|long}
+Can you search Wikipedia for information about quantum computing?
+
+/wikipedia_search term="quantum computing" results=5
 ```
 
-Gets a summary of a Wikipedia article with adjustable detail level.
+## Configuration Options
 
-### Get Citations
+The MCP server accepts the following configuration options:
 
-```
-GET /api/citations?title={article_title}
-```
-
-Extracts citations from a Wikipedia article.
-
-### Get Structured Data
-
-```
-GET /api/structured?title={article_title}
-```
-
-Extracts tables and infobox data from a Wikipedia article.
-
-### Get Sections
-
-```
-GET /api/sections?title={article_title}
-```
-
-Extracts all sections with their content from a Wikipedia article.
-
-## Configuration
-
-The server can be configured through environment variables:
-
-- `PORT`: Server port (default: 8000)
-- `HOST`: Server host (default: 0.0.0.0)
-- `RELOAD`: Enable auto-reload for development (default: True)
-- `CACHE_TYPE`: Caching strategy (ttl, lru, persist) (default: ttl)
-- `CACHE_TTL`: Cache time-to-live in seconds (default: 3600)
-- `CACHE_MAXSIZE`: Maximum cache size (default: 1000)
-- `CACHE_DIR`: Directory for persistent cache (default: src/.cache)
-- `RATE_LIMIT`: Delay between Wikipedia API requests in seconds (default: 1.0)
-
-## Setting up for Claude Desktop
-
-To use this API with Claude Desktop:
-
-1. Ensure the API is running locally
-2. In Claude Desktop, define a tool with the following specifications:
-
-```json
-{
-  "name": "wikipedia_search",
-  "description": "Search for Wikipedia articles matching a term",
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "term": {
-        "type": "string",
-        "description": "The search term to look for on Wikipedia"
-      },
-      "results": {
-        "type": "integer",
-        "description": "Number of results to return (1-50)",
-        "default": 10
-      }
-    },
-    "required": ["term"]
-  },
-  "url": "http://localhost:8000/api/search"
-}
-```
-
-Similar tool definitions can be created for the other endpoints.
-
-## Setting up for Cursor IDE
-
-To use this API with Cursor IDE:
-
-1. Ensure the API is running locally
-2. Configure the tool in Cursor's settings following their documentation for external API tools
-3. Point the tool to the `/mcp` endpoint to get the complete tool definition
-
-## Performance
-
-The API is designed to meet the following performance constraints:
-
-- Memory usage: <500MB
-- Cached response time: <2s
-- Efficient caching to reduce Wikipedia API calls
-- Unified parsing to minimize redundant processing
-
-## Error Handling
-
-The API provides consistent error handling:
-
-- `404`: Article not found
-- `422`: Validation error (e.g., invalid parameter)
-- `500`: Server error
-
-All errors return a JSON response with a `detail` field containing the error message.
-
-## Testing
-
-To run tests:
-
-```
-python -m pytest
-```
-
-For more detailed output:
-
-```
-python -m pytest -v
-```
+- `--host`: Host to bind the server to (default: `0.0.0.0`)
+- `--port`: Port to bind the server to (default: `8000`)
+- `--cache-type`: Type of cache to use (`ttl`, `lru`, or `persist`) (default: `ttl`)
+- `--cache-ttl`: Time-to-live for cache entries in seconds (default: `3600`)
+- `--cache-maxsize`: Maximum number of items in the cache (default: `1000`)
+- `--cache-dir`: Directory for persistent cache
+- `--rate-limit`: Delay between Wikipedia API requests in seconds (default: `1.0`)
 
 ## Development
 
-### Branches
+### Testing
 
-- `main`: Stable release branch
-- `refactor-wiki-api`: Branch containing recent refactoring work
+Run the tests to verify the server is working correctly:
 
-### Recent Improvements
-
-See the [REFACTORING_CHECKLIST.md](REFACTORING_CHECKLIST.md) file for details on recent refactoring work.
+```bash
+python test_mcp_server.py
+```
 
 ## License
 
-[MIT License](LICENSE)
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request. 
+This project is licensed under the MIT License - see the LICENSE file for details. 
